@@ -1,0 +1,24 @@
+{
+  "name": "readyverse",
+  "version": "1.0.0",
+  "description": "ReadyVerse — Interactive Emergency Preparedness Simulation Platform with ReadyVerse AI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node C:/Users/Ruby/.gemini/antigravity/brain/096592e4-aecf-40e9-85cd-75fbc7434234/scratch/run_all_tests.js",
+    "test:ai": "node C:/Users/Ruby/.gemini/antigravity/brain/096592e4-aecf-40e9-85cd-75fbc7434234/scratch/test_readyverse_ai.js"
+  },
+  "keywords": [
+    "disaster-preparedness",
+    "emergency-simulation",
+    "readyverse-ai",
+    "voice-agent",
+    "realtime-ai"
+  ],
+  "author": "ReadyVerse Team",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

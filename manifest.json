@@ -1,0 +1,71 @@
+{
+  "name": "ReadyVerse — Campus Disaster Preparedness & Drills",
+  "short_name": "ReadyVerse",
+  "description": "Interactive student emergency drills, campus safety simulations, and disaster preparedness training.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0B0F19",
+  "theme_color": "#6C4CF1",
+  "categories": [
+    "education",
+    "safety",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Daily Drill",
+      "short_name": "Daily Drill",
+      "description": "Start today's 60-second emergency challenge",
+      "url": "./index.html?action=daily-drill",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Fire Safety Drill",
+      "short_name": "Fire Drill",
+      "description": "Practice hostel fire response and evacuation",
+      "url": "./index.html?action=fire-drill",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Safety Lessons",
+      "short_name": "Learn Hub",
+      "description": "NDMA disaster preparedness guides and quizzes",
+      "url": "./index.html?section=learn",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
