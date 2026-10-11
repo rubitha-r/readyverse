@@ -1,7 +1,8 @@
 /**
  * ReadyVerse AI — Universal User Interface Layer
- * Injects floating triggers, manages voice modal, visualizer waveform,
- * live transcripts, contextual suggestion chips, and error banners.
+ * Manages floating trigger, voice/chat modal, waveform visualizer,
+ * live transcripts, contextual suggestion chips, mobile viewport pinning,
+ * voice recognition (SpeechRecognition) & read-aloud (SpeechSynthesis).
  */
 
 (function (root, factory) {
@@ -25,9 +26,12 @@
             this.isListening = false;
             this.speechLang = 'en-IN';
             this.isTtsEnabled = false;
+            this._lastUserMessage = '';
+
             try {
                 this.isTtsEnabled = localStorage.getItem('readyverse_ai_tts_enabled') === 'true';
             } catch (_) {}
+
             this.dom = {};
             this.init();
         }
@@ -39,6 +43,7 @@
             this.bindEvents();
             this.setupTransportListeners();
             this.scheduleCoachmark();
+            this.setupViewportListener();
         }
 
         createDOM() {
@@ -87,6 +92,7 @@
                             </div>
                         </div>
                         <div class="rv-ai-header-actions">
+                            <button class="rv-ai-clear-btn" id="rvAiClearBtn" title="Clear chat conversation" aria-label="Clear chat">Clear</button>
                             <button class="rv-ai-tts-toggle-btn" id="rvAiTtsToggleBtn" title="Toggle AI voice replies read-aloud" aria-label="Toggle voice output" aria-pressed="false">
                                 <span class="tts-icon">🔇</span>
                                 <span class="tts-label">Voice: OFF</span>
@@ -119,18 +125,21 @@
 
                     <!-- Transcript Stream -->
                     <div class="rv-ai-transcript" id="rvAiTranscript">
-                        <div class="rv-ai-bubble-wrap assistant">
+                        <div class="rv-ai-bubble-wrap assistant initial-welcome">
                             <div class="rv-ai-bubble">
                                 Hey! I'm your ReadyVerse disaster preparedness AI coach (Beta). You can speak or chat with me in English, Tamil, or Tanglish about your drills, fire safety, flood response, or emergency protocols. How can I help right now?
                             </div>
-                            <span class="rv-ai-bubble-meta">ReadyVerse AI · Coach (Beta)</span>
+                            <div class="rv-ai-bubble-meta-row">
+                                <span class="rv-ai-bubble-meta">ReadyVerse AI · Coach (Beta)</span>
+                                <span class="rv-ai-source-badge builtin">Built-in</span>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Contextual Suggestion Chips -->
                     <div class="rv-ai-chips-wrap" id="rvAiChipsWrap"></div>
 
-                    <!-- Controls & Text Fallback -->
+                    <!-- Controls & Text Input -->
                     <div class="rv-ai-footer">
                         <button class="rv-ai-mic-btn" id="rvAiMicBtn" title="Start voice input" aria-label="Talk to ReadyVerse AI">
                             🎙️
@@ -141,7 +150,7 @@
                         </div>
                     </div>
 
-                    <!-- PROMPT 7 & 8: AI COACH DISCLAIMER & LIMITATIONS -->
+                    <!-- AI COACH DISCLAIMER & LIMITATIONS -->
                     <div class="rv-ai-disclaimer" id="rvAiDisclaimer">
                         ⚠️ <strong>Beta AI Coach:</strong> Voice recognition and the AI coach need internet. Spoken audio depends on voices installed on the phone. Answers strictly grounded in ReadyVerse disaster lessons. Never invent steps or medical advice. In an emergency, call <strong>112</strong> immediately.
                     </div>
@@ -161,6 +170,7 @@
             this.dom.chipsWrap = overlay.querySelector('#rvAiChipsWrap');
             this.dom.micBtn = overlay.querySelector('#rvAiMicBtn');
             this.dom.ttsToggleBtn = overlay.querySelector('#rvAiTtsToggleBtn');
+            this.dom.clearBtn = overlay.querySelector('#rvAiClearBtn');
             this.dom.langPill = overlay.querySelector('#rvAiLangPill');
             this.dom.textInput = overlay.querySelector('#rvAiTextInput');
             this.dom.sendBtn = overlay.querySelector('#rvAiSendBtn');
@@ -181,6 +191,11 @@
                     this.close();
                 }
             });
+
+            // Clear Chat
+            if (this.dom.clearBtn) {
+                this.dom.clearBtn.addEventListener('click', () => this.clearChat());
+            }
 
             // Voice Output (SpeechSynthesis) Toggle
             if (this.dom.ttsToggleBtn) {
@@ -204,6 +219,20 @@
                 }
             });
 
+            // Delegate Retry Clicks in Transcript
+            if (this.dom.transcript) {
+                this.dom.transcript.addEventListener('click', e => {
+                    const retryBtn = e.target.closest('.rv-ai-retry-btn');
+                    if (retryBtn) {
+                        const retryText = retryBtn.dataset.retryText;
+                        if (retryText) {
+                            retryBtn.remove();
+                            this.sendToCoach(retryText, 'retry');
+                        }
+                    }
+                });
+            }
+
             // ESC key to close
             document.addEventListener('keydown', e => {
                 if (e.key === 'Escape' && this.isOpen) {
@@ -219,24 +248,42 @@
             });
         }
 
+        setupViewportListener() {
+            if (typeof window !== 'undefined' && window.visualViewport) {
+                const onResize = () => {
+                    if (!this.isOpen || !this.dom.window) return;
+                    if (window.innerWidth <= 480) {
+                        const vv = window.visualViewport;
+                        this.dom.window.style.height = `${vv.height}px`;
+                        this.dom.window.style.transform = `translateY(0)`;
+                        this.scrollToBottom();
+                    }
+                };
+                window.visualViewport.addEventListener('resize', onResize);
+                window.visualViewport.addEventListener('scroll', onResize);
+            }
+        }
+
         setupTransportListeners() {
-            // State Changes (DISCONNECTED, CONNECTING, CONNECTED, LISTENING, THINKING, SPEAKING, TEXT_MODE, ERROR)
             this.transport.on('stateChange', ({ state, mode, provider, routerStatus }) => {
                 this.updateStateUI(state, mode);
             });
 
-            // Live Transcripts
             this.transport.on('transcript', item => {
                 this.appendTranscript(item);
             });
 
-            // Error notifications
             this.transport.on('error', err => {
                 this.showError(err.message);
+                if (this._lastUserMessage) {
+                    this.showRetryOption(this._lastUserMessage);
+                }
             });
-            this.transport.on('availability', ({ availability }) => this.updateAvailabilityUI(availability));
 
-            // Failover notifications
+            this.transport.on('availability', ({ availability, reason }) => {
+                this.updateAvailabilityUI(availability, reason);
+            });
+
             this.transport.on('failover', ({ from, to, mode, reason }) => {
                 this.isVoiceActive = false;
                 this.dom.micBtn.classList.remove('active');
@@ -252,12 +299,18 @@
             this.dom.overlay.classList.add('active');
             this.updateContextualChips();
             this.clearError();
+            if (window.innerWidth <= 480 && window.visualViewport) {
+                this.dom.window.style.height = `${window.visualViewport.height}px`;
+            }
             setTimeout(() => this.dom.textInput.focus(), 150);
         }
 
         close() {
             this.isOpen = false;
             this.dom.overlay.classList.remove('active');
+            if (this.dom.window) {
+                this.dom.window.style.height = '';
+            }
             if (this.isListening) {
                 this.stopVoiceInput();
             }
@@ -268,6 +321,25 @@
                 ReadyVerseSpeech.stop();
             }
             this.dom.trigger.focus();
+        }
+
+        clearChat() {
+            if (this.transport && typeof this.transport.clearHistory === 'function') {
+                this.transport.clearHistory();
+            }
+            this.dom.transcript.innerHTML = `
+                <div class="rv-ai-bubble-wrap assistant initial-welcome">
+                    <div class="rv-ai-bubble">
+                        Conversation cleared. How can I assist you with your disaster drills or campus safety today?
+                    </div>
+                    <div class="rv-ai-bubble-meta-row">
+                        <span class="rv-ai-bubble-meta">ReadyVerse AI · Coach (Beta)</span>
+                        <span class="rv-ai-source-badge builtin">Built-in</span>
+                    </div>
+                </div>
+            `;
+            this.clearError();
+            this.updateContextualChips();
         }
 
         scheduleCoachmark() {
@@ -299,7 +371,6 @@
                 }
             };
 
-            // Listen for app entry events
             window.addEventListener('readyverse:app-entered', () => trySchedule());
             document.addEventListener('click', (e) => {
                 if (e.target && (e.target.id === 'enterReadyVerse' || e.target.closest('#enterReadyVerse') || e.target.classList?.contains('landing-header-enter-btn') || e.target.getAttribute('onclick')?.includes('openDashboard'))) {
@@ -307,7 +378,6 @@
                 }
             });
 
-            // If app was already loaded directly into dashboard/app pages
             if (isInsideApp()) {
                 trySchedule();
             }
@@ -325,22 +395,23 @@
                 this.dom.trigger.removeAttribute('aria-describedby');
                 this.dom.trigger.classList.remove('attention-once');
             }
-            try { localStorage.setItem('readyverse_ai_intro_seen_v1', 'true'); } catch (_) { /* Non-blocking. */ }
+            try { localStorage.setItem('readyverse_ai_intro_seen_v1', 'true'); } catch (_) {}
         }
 
-        updateAvailabilityUI(availability) {
+        updateAvailabilityUI(availability, reason = '') {
             if (availability === 'OFFLINE_READY') {
                 this.dom.statusText.textContent = 'Offline Ready Mode';
                 this.dom.statusDot.className = 'rv-ai-status-dot offline';
-                this.dom.errorBanner.style.display = 'flex';
-                this.dom.errorMessage.textContent = 'The AI friend is offline right now. Check the lessons or call 112.';
+                if (reason) {
+                    this.showError(reason);
+                }
             } else if (availability === 'CLOUD_BACKUP') {
-                this.dom.errorBanner.style.display = 'none';
-                this.dom.statusText.textContent = 'Text Mode · Groq Backup';
+                this.clearError();
+                this.dom.statusText.textContent = 'Active · Groq Backup';
                 this.dom.statusDot.className = 'rv-ai-status-dot text-mode';
             } else {
-                this.dom.errorBanner.style.display = 'none';
-                this.dom.statusText.textContent = 'Ready (Voice)';
+                this.clearError();
+                this.dom.statusText.textContent = 'Ready';
                 this.dom.statusDot.className = 'rv-ai-status-dot';
             }
         }
@@ -371,9 +442,6 @@
         getSpeechLanguage() {
             if (this.speechLang === 'ta-IN') return 'ta-IN';
             if (this.speechLang === 'en-IN') return 'en-IN';
-            if (typeof state !== 'undefined' && (state.drillLanguage === 'ta' || state.language === 'ta')) return 'ta-IN';
-            if (typeof dailyDrillSession !== 'undefined' && dailyDrillSession.lang === 'ta') return 'ta-IN';
-            if (typeof document !== 'undefined' && document.documentElement.lang === 'ta') return 'ta-IN';
             return 'en-IN';
         }
 
@@ -406,7 +474,6 @@
                 return;
             }
 
-            // Stop any ongoing speech synthesis playback
             if (typeof ReadyVerseSpeech !== 'undefined' && ReadyVerseSpeech.isSpeaking()) {
                 ReadyVerseSpeech.stop();
             }
@@ -461,7 +528,7 @@
 
                     if (finalTranscript.trim()) {
                         this.stopVoiceInput();
-                        this.handleTextSubmit();
+                        this.sendToCoach(finalTranscript.trim(), 'voice');
                     }
                 };
 
@@ -579,37 +646,52 @@
             }
         }
 
-        async toggleVoice() {
-            if (this.isListening) {
-                this.stopVoiceInput();
-            } else {
-                this.startVoiceInput();
-            }
-        }
-
-        async startVoice() {
-            this.startVoiceInput();
-        }
-
-        stopVoice() {
-            this.stopVoiceInput();
-        }
-
         async handleTextSubmit() {
             const text = this.dom.textInput.value;
             if (!text || !text.trim()) return;
-
             this.dom.textInput.value = '';
             this.clearError();
+            await this.sendToCoach(text, 'typed');
+        }
 
-            if (this.isVoiceActive && this.transport.state !== 'DISCONNECTED') {
-                this.transport.sendTextMessage(text);
-            } else {
-                try {
-                    await this.transport.sendChatFallback(text);
-                } catch (err) {
-                    this.showError(err.message || 'Chat request failed. Check your GEMINI_API_KEY in .env.');
-                }
+        // =====================================================================
+        // UNIFIED UI ENTRY POINT: sendToCoach(message, source)
+        // =====================================================================
+        async sendToCoach(message, source = 'typed') {
+            if (!message || !message.trim()) return;
+            const cleanText = message.trim();
+            this._lastUserMessage = cleanText;
+
+            // Render user bubble immediately
+            this.appendTranscript({
+                speaker: 'user',
+                text: cleanText,
+                isFinal: true
+            });
+
+            this.updateStateUI('THINKING', 'text');
+            this.clearError();
+
+            try {
+                const reply = await this.transport.sendToCoach(cleanText, source);
+                return reply;
+            } catch (err) {
+                console.error('[ReadyVerse AI UI] sendToCoach failed:', err);
+                this.showError(err.message || 'Chat request failed. Check your network or provider settings.');
+                this.showRetryOption(cleanText);
+            }
+        }
+
+        showRetryOption(failedText) {
+            const lastWrap = this.dom.transcript.querySelector('.rv-ai-bubble-wrap:last-child');
+            if (lastWrap && !lastWrap.querySelector('.rv-ai-retry-btn')) {
+                const retryBtn = document.createElement('button');
+                retryBtn.className = 'rv-ai-retry-btn';
+                retryBtn.type = 'button';
+                retryBtn.dataset.retryText = failedText;
+                retryBtn.innerHTML = '↻ Retry message';
+                lastWrap.appendChild(retryBtn);
+                this.scrollToBottom();
             }
         }
 
@@ -623,56 +705,14 @@
                 return;
             }
 
-            if (this.transport.sessionMode === 'text' || this.transport.activeProviderName === 'groq' || state === 'TEXT_MODE') {
-                if (state === 'THINKING') {
-                    this.dom.statusText.textContent = 'Thinking...';
-                    this.dom.statusDot.classList.add('thinking');
-                } else if (state === 'ERROR') {
-                    this.dom.statusText.textContent = 'Alert';
-                    this.dom.statusDot.classList.add('error');
-                } else {
-                    const label = this.transport.availability === 'CLOUD_BACKUP' ? 'Text Mode · Groq Backup' : 'Text Mode · Active';
-                    this.dom.statusText.textContent = label;
-                    this.dom.statusDot.classList.add('text-mode');
-                }
-                return;
-            }
-
-            switch (state) {
-                case 'CONNECTING':
-                    this.dom.statusText.textContent = 'Connecting Voice...';
-                    this.dom.statusDot.classList.add('connecting');
-                    break;
-                case 'CONNECTED':
-                    this.dom.statusText.textContent = 'Voice Connected';
-                    this.dom.statusDot.classList.add('listening');
-                    break;
-                case 'LISTENING':
-                    this.dom.statusText.textContent = 'Listening...';
-                    this.dom.statusDot.classList.add('listening');
-                    this.dom.waveform.classList.add('listening');
-                    break;
-                case 'THINKING':
-                    this.dom.statusText.textContent = 'Thinking...';
-                    this.dom.statusDot.classList.add('thinking');
-                    break;
-                case 'SPEAKING':
-                    this.dom.statusText.textContent = 'Speaking...';
-                    this.dom.statusDot.classList.add('speaking');
-                    this.dom.waveform.classList.add('speaking');
-                    break;
-                case 'TEXT_MODE':
-                    this.dom.statusText.textContent = 'Text Mode · Groq Backup';
-                    this.dom.statusDot.classList.add('text-mode');
-                    break;
-                case 'ERROR':
-                    this.dom.statusText.textContent = 'Alert';
-                    this.dom.statusDot.classList.add('error');
-                    break;
-                case 'DISCONNECTED':
-                default:
-                    this.dom.statusText.textContent = this.transport.primaryProviderName === 'gemini' ? 'Ready (Voice)' : 'Ready';
-                    break;
+            if (state === 'THINKING') {
+                this.dom.statusText.textContent = 'Thinking...';
+                this.dom.statusDot.classList.add('thinking');
+            } else if (state === 'ERROR') {
+                this.dom.statusText.textContent = 'Alert';
+                this.dom.statusDot.classList.add('error');
+            } else {
+                this.dom.statusText.textContent = 'Ready';
             }
         }
 
@@ -683,34 +723,10 @@
             const language = item.language || (this.transport && this.transport.lastDetectedLanguage) || 'english';
             const isFinal = item.isFinal !== false;
             const isSystemNotice = Boolean(item.isSystemNotice);
-
-            // Deduplicate consecutive identical system notices
-            if (isSystemNotice) {
-                const lastWrap = this.dom.transcript.querySelector('.rv-ai-bubble-wrap:last-child');
-                if (lastWrap) {
-                    const lastBubble = lastWrap.querySelector('.rv-ai-bubble');
-                    const lastText = (lastBubble ? lastBubble.textContent : lastWrap.textContent) || '';
-                    if (lastText.trim() === text.trim() || lastText.trim().includes(text.trim()) || text.trim().includes(lastText.trim())) {
-                        return; // Ignore duplicate identical system notice
-                    }
-                }
-            }
-
-            let lastWrap = this.dom.transcript.querySelector('.rv-ai-bubble-wrap:last-child');
-
-            // If assistant stream is ongoing and not final, update existing bubble
-            if (role === 'assistant' && !isFinal && !isSystemNotice && lastWrap && lastWrap.classList.contains('assistant') && lastWrap.dataset.streaming === 'true') {
-                const bubble = lastWrap.querySelector('.rv-ai-bubble');
-                if (bubble) bubble.textContent = text;
-                this.scrollToBottom();
-                return;
-            }
+            const sourceTag = item.sourceTag || (role === 'user' ? null : 'Built-in');
 
             const wrap = document.createElement('div');
             wrap.className = `rv-ai-bubble-wrap ${role}${isSystemNotice ? ' system-notice' : ''}`;
-            if (role === 'assistant' && !isFinal && !isSystemNotice) {
-                wrap.dataset.streaming = 'true';
-            }
 
             const langBadge = language === 'tamil' ? 'தமிழ்' : (language === 'tanglish' ? 'Tanglish' : 'EN');
             const authorName = role === 'user' ? 'You' : (isSystemNotice ? 'ReadyVerse System' : 'ReadyVerse AI');
@@ -723,10 +739,19 @@
                     </div>
                     <span class="rv-ai-bubble-meta">${authorName}</span>
                 `;
-            } else {
+            } else if (role === 'user') {
                 wrap.innerHTML = `
                     <div class="rv-ai-bubble">${this.escapeHTML(text)}</div>
-                    <span class="rv-ai-bubble-meta">${authorName} · ${langBadge}</span>
+                    <span class="rv-ai-bubble-meta">${authorName}</span>
+                `;
+            } else {
+                const tagClass = sourceTag === 'AI' ? 'ai' : 'builtin';
+                wrap.innerHTML = `
+                    <div class="rv-ai-bubble">${this.escapeHTML(text)}</div>
+                    <div class="rv-ai-bubble-meta-row">
+                        <span class="rv-ai-bubble-meta">${authorName} · ${langBadge}</span>
+                        <span class="rv-ai-source-badge ${tagClass}">${sourceTag}</span>
+                    </div>
                 `;
             }
 
@@ -793,7 +818,7 @@
                     contextLabel = 'Command Center';
                     chips = [
                         { label: 'What should I do next?', text: 'What is the highest-impact action I should do next to improve my readiness?' },
-                        { label: 'Explain my readiness score', text: 'Explain how my readiness score is calculated using the 50/30/20 formula.' },
+                        { label: 'Explain my readiness score', text: 'Explain how my readiness score is calculated using the 40/30/30 formula.' },
                         { label: 'Tanglish overview', text: 'ReadyVerse platform-la enna ellam irukku nu Tanglish-la explain pannunga.' },
                         { label: 'Tell me about Building Fire', text: 'Tell me about the Building Fire simulation and what instincts it trains.' }
                     ];
@@ -812,10 +837,10 @@
             chips.forEach(c => {
                 const btn = document.createElement('button');
                 btn.className = 'rv-ai-chip';
+                btn.type = 'button';
                 btn.textContent = c.label;
                 btn.addEventListener('click', () => {
-                    this.dom.textInput.value = c.text;
-                    this.handleTextSubmit();
+                    this.sendToCoach(c.text, 'chip');
                 });
                 this.dom.chipsWrap.appendChild(btn);
             });

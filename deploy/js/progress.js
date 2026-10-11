@@ -41,6 +41,7 @@
     }
 
     const STORAGE_KEY_V2 = "readyverse:v2";
+    const STORAGE_KEY_LEGACY_V2 = "readyverse_player_progress_v2";
     const STORAGE_KEY_V1 = "readyverse_player_progress_v1";
 
     // XP Constants Table (matching screen UI values)
@@ -325,7 +326,9 @@
         if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return;
         try {
             const payload = serializeState(st);
-            localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(payload));
+            const str = JSON.stringify(payload);
+            localStorage.setItem(STORAGE_KEY_V2, str);
+            localStorage.setItem(STORAGE_KEY_LEGACY_V2, str);
         } catch (e) {
             console.warn('[ReadyVerseProgress] Could not save state to localStorage:', e);
         }
@@ -336,7 +339,7 @@
         if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return dest;
 
         try {
-            const rawV2 = localStorage.getItem(STORAGE_KEY_V2);
+            const rawV2 = localStorage.getItem(STORAGE_KEY_V2) || localStorage.getItem(STORAGE_KEY_LEGACY_V2);
 
             // Case A: v2 storage exists
             if (rawV2) {

@@ -118,9 +118,17 @@ const server = http.createServer(async (req, res) => {
     const fullUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = fullUrl.pathname;
 
-    // --- API: ReadyVerse AI Coach Serverless Function (Prompt 7) ---
-    if (pathname === '/api/coach') {
+    // --- API: ReadyVerse AI Coach Serverless Function (Prompt 7 / Phase 1) ---
+    if (pathname === '/api/coach' || pathname === '/api/coach-health') {
         const coachHandler = require('./api/coach');
+        if (pathname === '/api/coach-health' && req.method === 'GET') {
+            return (async () => {
+                const healthRes = await coachHandler.handleCoachRequest({ health: true }, 'health-check');
+                res.statusCode = 200;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify(healthRes.body));
+            })();
+        }
         return coachHandler(req, res);
     }
 

@@ -3,7 +3,7 @@
  * Provides robust offline PWA caching for App Shell, Lessons, Drills, and Data.
  */
 
-const CACHE_NAME = 'readyverse-3ec33a19d2';
+const CACHE_NAME = 'readyverse-3b6c110ea5';
 const STATIC_ASSETS = [
     './',
     './index.html',
@@ -18,6 +18,9 @@ const STATIC_ASSETS = [
     './js/supabase-client.js',
     './js/data/sources.js',
     './js/data/tamil-translations.js',
+    './js/readyverse-ai/language-detector.js',
+    './js/readyverse-ai/emergency-detector.js',
+    './js/readyverse-ai/quiz-state-machine.js',
     './js/readyverse-ai/ai-ui.js',
     './js/readyverse-ai/ai-transport.js',
     './js/readyverse-ai/ai-context.js',

@@ -1,13 +1,16 @@
 /**
  * ReadyVerse AI — Provider Router & Failover Engine
- * Centralized provider router managing Gemini Live (Primary Voice/Text),
- * Groq LPU (Fast Conversational Text Backup), and Grounded ReadyVerse Fallback.
- * Preserves 8-domain application context, language mirroring, safety boundaries, and tool safety.
+ * Centralized pipeline managing /api/coach (Gemini Primary / Groq Fallback),
+ * deterministic Quiz State Machine, Emergency Intent Detection,
+ * Language Mirroring, and Grounded ReadyVerse Fallback.
  */
 
 (function (root, factory) {
     if (typeof define === 'function' && define.amd) {
         define([
+            './language-detector',
+            './emergency-detector',
+            './quiz-state-machine',
             './ai-context',
             './ai-tools',
             './ai-personality',
@@ -17,6 +20,9 @@
             './providers/openai-provider'
         ], factory);
     } else if (typeof module === 'object' && module.exports) {
+        const langDetector = require('./language-detector');
+        const emergencyDetector = require('./emergency-detector');
+        const quizStateMachine = require('./quiz-state-machine');
         const context = require('./ai-context');
         const tools = require('./ai-tools');
         const personality = require('./ai-personality');
@@ -24,9 +30,23 @@
         const GeminiLiveProvider = require('./providers/gemini-live-provider');
         const GroqProvider = require('./providers/groq-provider');
         const OpenAIProvider = require('./providers/openai-provider');
-        module.exports = factory(context, tools, personality, ProviderBase, GeminiLiveProvider, GroqProvider, OpenAIProvider);
+        module.exports = factory(
+            langDetector,
+            emergencyDetector,
+            quizStateMachine,
+            context,
+            tools,
+            personality,
+            ProviderBase,
+            GeminiLiveProvider,
+            GroqProvider,
+            OpenAIProvider
+        );
     } else {
         root.ReadyVerseAITransport = factory(
+            root.ReadyVerseLanguageDetector,
+            root.ReadyVerseEmergencyDetector,
+            root.ReadyVerseQuizStateMachine,
             root.ReadyVerseAIContext,
             root.ReadyVerseAITools,
             root.ReadyVerseAIPersonality,
@@ -37,6 +57,9 @@
         );
     }
 }(typeof self !== 'undefined' ? self : this, function (
+    LanguageDetector,
+    EmergencyDetector,
+    QuizStateMachine,
     AIContext,
     AITools,
     AIPersonality,
@@ -50,35 +73,38 @@
     class ReadyVerseAITransport {
         constructor(config = {}) {
             this.serverUrl = config.serverUrl || '';
-            this.state = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | CONNECTED | LISTENING | THINKING | SPEAKING | ERROR
-            this.mode = 'voice'; // 'voice' | 'text'
+            this.state = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | CONNECTED | LISTENING | THINKING | SPEAKING | TEXT_MODE | OFFLINE_READY | ERROR
+            this.mode = 'text'; // 'voice' | 'text'
             this.config = config;
 
-            // Centralized Router Architecture
+            // Router Architecture
             this.primaryProviderName = config.primaryProvider || 'gemini';
             this.fallbackProviderName = config.fallbackProvider || 'groq';
             this.activeProviderName = this.primaryProviderName;
-            this.sessionMode = 'voice'; // 'voice' | 'text'
+            this.sessionMode = 'text';
             this.voiceActive = false;
             this.failoverCount = 0;
             this.availability = 'CLOUD_PRIMARY'; // CLOUD_PRIMARY | CLOUD_BACKUP | OFFLINE_READY
             this.isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+
             this._onOnline = () => {
                 this.isOnline = true;
-                this.activeProviderName = this.primaryProviderName;
-                this.activeProvider = this.providers[this.primaryProviderName] || this.providers.gemini;
                 this.emitAvailability('CLOUD_PRIMARY');
             };
-            this._onOffline = () => { this.isOnline = false; this.enterOfflineReady('Browser reports that the device is offline.'); };
+            this._onOffline = () => {
+                this.isOnline = false;
+                this.enterOfflineReady('Browser reports device is offline.');
+            };
+
             if (typeof window !== 'undefined' && window.addEventListener) {
                 window.addEventListener('online', this._onOnline);
                 window.addEventListener('offline', this._onOffline);
             }
 
             this.conversationHistory = [];
+            this.sessionLanguage = null;
             this.lastDetectedLanguage = 'english';
-            this._isFailingOver = false;
-            this._lastFailoverNoticeTime = 0;
+            this._inFlightRequests = new Map();
 
             this.listeners = {
                 stateChange: [],
@@ -86,10 +112,10 @@
                 toolCall: [],
                 interrupted: [],
                 failover: [],
-                error: []
+                error: [],
+                availability: []
             };
 
-            // Provider Registry
             this.providers = {};
             this.initProviders();
         }
@@ -106,7 +132,7 @@
             if (GroqProvider) {
                 this.providers.groq = new GroqProvider({
                     serverUrl: this.serverUrl,
-                    model: this.config.groqModel || 'openai/gpt-oss-120b'
+                    model: this.config.groqModel || 'llama-3.1-8b-instant'
                 });
             }
 
@@ -131,41 +157,24 @@
                 failoverCount: this.failoverCount,
                 sessionMode: this.sessionMode,
                 state: this.state,
-                availability: this.availability
+                availability: this.availability,
+                sessionLanguage: this.sessionLanguage
             };
         }
 
         setProvider(providerName) {
             if (!this.providers[providerName]) {
-                console.warn(`[ReadyVerse AI Router] Provider '${providerName}' not found. Defaulting to '${this.activeProviderName}'.`);
+                console.warn(`[ReadyVerse AI Router] Provider '${providerName}' not found.`);
                 return;
-            }
-            if (this.state !== 'DISCONNECTED') {
-                this.disconnect();
             }
             this.activeProviderName = providerName;
             this.activeProvider = this.providers[providerName];
-            (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(`[ReadyVerse AI Router] Active provider switched to: ${providerName.toUpperCase()}`);
             this.emit('stateChange', {
                 state: this.state,
                 mode: this.mode,
                 provider: this.activeProviderName,
                 routerStatus: this.getRouterStatus()
             });
-        }
-
-        getActiveProvider() {
-            return this.activeProvider;
-        }
-
-        // Reset session for a new interaction turn (re-attempting primary Gemini Live)
-        resetSession() {
-            this.activeProviderName = this.primaryProviderName;
-            this.activeProvider = this.providers[this.primaryProviderName] || this.providers.gemini;
-            this.sessionMode = 'voice';
-            this.voiceActive = false;
-            this._isFailingOver = false;
-            (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(`[ReadyVerse AI Router] Session reset. Primary provider (${this.primaryProviderName.toUpperCase()}) re-engaged.`);
         }
 
         on(event, callback) {
@@ -183,445 +192,377 @@
         emit(event, data) {
             if (this.listeners[event]) {
                 this.listeners[event].forEach(cb => {
-                    try {
-                        cb(data);
-                    } catch (e) {
-                        console.error(`[ReadyVerse AI] Error in listener for ${event}:`, e);
-                    }
+                    try { cb(data); } catch (e) { console.error('[ReadyVerse AI] Listener error:', e); }
                 });
             }
-        }
-
-        emitAvailability(availability, reason) {
-            this.availability = availability;
-            this.emit('availability', { availability, reason: reason || '', provider: this.activeProviderName });
-        }
-
-        enterOfflineReady(reason) {
-            this.activeProviderName = 'offline';
-            this.activeProvider = null;
-            this.sessionMode = 'text';
-            this.voiceActive = false;
-            this.emitAvailability('OFFLINE_READY', reason);
         }
 
         setState(newState) {
-            if (this.state !== newState) {
-                this.state = newState;
-                this.emit('stateChange', {
-                    state: this.state,
-                    mode: this.mode,
-                    provider: this.activeProviderName,
-                    routerStatus: this.getRouterStatus()
-                });
+            this.state = newState;
+            this.emit('stateChange', {
+                state: this.state,
+                mode: this.mode,
+                provider: this.activeProviderName,
+                routerStatus: this.getRouterStatus()
+            });
+        }
+
+        emitAvailability(avail, reason = '') {
+            this.availability = avail;
+            this.emit('availability', { availability: avail, reason });
+        }
+
+        enterOfflineReady(reason = '') {
+            this.availability = 'OFFLINE_READY';
+            this.emitAvailability('OFFLINE_READY', reason);
+        }
+
+        clearHistory() {
+            this.conversationHistory = [];
+            this.sessionLanguage = null;
+            if (QuizStateMachine && typeof QuizStateMachine.resetQuiz === 'function') {
+                QuizStateMachine.resetQuiz();
             }
         }
 
-        // 1. Connect Realtime Voice Session via Primary Provider (Gemini Live)
-        async connectVoice() {
-            this.mode = 'voice';
-            if (!this.isOnline) {
-                this.enterOfflineReady('Internet connection is unavailable.');
-                return false;
+        // =====================================================================
+        // UNIFIED PIPELINE: sendToCoach(message, source)
+        // All typed input, chips, and voice transcripts go through this single method.
+        // =====================================================================
+        async sendToCoach(message, source = 'typed') {
+            if (!message || typeof message !== 'string') return null;
+            const cleanText = message.trim();
+            if (!cleanText) return null;
+
+            // In-flight deduplication
+            if (this._inFlightRequests.has(cleanText)) {
+                return this._inFlightRequests.get(cleanText);
             }
-            this.setState('CONNECTING');
 
-            const primary = this.providers[this.primaryProviderName] || this.providers.gemini;
-            this.activeProvider = primary;
-            this.activeProviderName = this.primaryProviderName;
-            this.emitAvailability('CLOUD_PRIMARY');
-
-            let hasHandledFailover = false;
-            const callbacks = {
-                onStateChange: (state) => {
-                    if (state === 'CONNECTED' || state === 'LISTENING') {
-                        this.voiceActive = true;
-                    }
-                    this.setState(state);
-                },
-                onTranscript: (t) => {
-                    if (t && t.text && AIPersonality) {
-                        const lang = AIPersonality.detectLanguage(t.text);
-                        if (lang) this.lastDetectedLanguage = lang;
-                    }
-                    this.emit('transcript', t);
-                },
-                onToolCall: (tc) => this.emit('toolCall', tc),
-                onInterrupted: () => this.emit('interrupted'),
-                onError: (err) => {
-                    console.warn('[ReadyVerse AI Router] Primary voice error encountered:', err);
-                    if (!hasHandledFailover) {
-                        hasHandledFailover = true;
-                        this.handleVoiceFailover(err);
-                    }
-                }
-            };
+            const requestPromise = this._executeSendToCoach(cleanText, source);
+            this._inFlightRequests.set(cleanText, requestPromise);
 
             try {
-                await primary.connectVoice(callbacks);
-                this.voiceActive = true;
-                return true;
-            } catch (err) {
-                console.warn('[ReadyVerse AI Router] Primary voice connection failed. Initiating failover:', err.message);
-                if (!hasHandledFailover) {
-                    hasHandledFailover = true;
-                    this.handleVoiceFailover(err);
-                }
-                return false;
+                return await requestPromise;
+            } finally {
+                this._inFlightRequests.delete(cleanText);
             }
         }
 
-        // Automatic Voice-to-Text Failover Transition
-        handleVoiceFailover(err) {
-            if (this._isFailingOver) {
-                return;
+        async _executeSendToCoach(cleanText, source) {
+            // 1. Language Detection & Sticky Session Persistence
+            let detectedLang = 'english';
+            if (LanguageDetector && typeof LanguageDetector.detectLanguage === 'function') {
+                const langRes = LanguageDetector.detectLanguage(cleanText, this.sessionLanguage);
+                detectedLang = langRes.language;
+                this.sessionLanguage = langRes.stickyLanguage;
+            } else if (AIPersonality && typeof AIPersonality.detectLanguage === 'function') {
+                detectedLang = AIPersonality.detectLanguage(cleanText);
             }
-            this._isFailingOver = true;
+            this.lastDetectedLanguage = detectedLang;
 
-            this.voiceActive = false;
-            this.sessionMode = 'text';
-            this.mode = 'text';
-            this.failoverCount++;
-
-            // Clean up voice connection hardware
-            if (this.providers.gemini) {
-                try { this.providers.gemini.disconnect(); } catch (e) {}
-            }
-
-            // Switch active provider to Groq backup
-            this.activeProviderName = this.fallbackProviderName;
-            this.activeProvider = this.providers[this.fallbackProviderName] || this.providers.groq;
-            (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(`[ReadyVerse AI Router] Voice-to-Text Failover executed: Active provider is now ${this.activeProviderName.toUpperCase()}`);
-
-            this.setState('TEXT_MODE');
-            this.emitAvailability('CLOUD_BACKUP', err && err.message);
-
-            // Emit failover event for telemetry / UI
-            this.emit('failover', {
-                from: this.primaryProviderName,
-                to: this.activeProviderName,
-                mode: 'text',
-                reason: err ? err.message : 'Voice session interrupted'
-            });
-
-            // Show friendly collegiate notification to student (deduplicated)
-            const now = Date.now();
-            if (now - this._lastFailoverNoticeTime > 1500) {
-                this._lastFailoverNoticeTime = now;
+            // 2. Immediate Life-Threatening Emergency Intent Check
+            if (EmergencyDetector && typeof EmergencyDetector.isEmergency === 'function' && EmergencyDetector.isEmergency(cleanText)) {
+                const emgReply = EmergencyDetector.getEmergencyResponse(cleanText, detectedLang);
+                this.conversationHistory.push({ role: 'user', content: cleanText });
+                this.conversationHistory.push({ role: 'assistant', content: emgReply });
                 this.emit('transcript', {
-                    role: 'assistant',
                     speaker: 'assistant',
-                    text: "Voice connection was interrupted. I'm continuing here in text mode — ask me anything!",
-                    isSystemNotice: true,
+                    text: emgReply,
+                    sourceTag: 'Built-in',
+                    language: detectedLang,
                     isFinal: true
                 });
+                this.setState('TEXT_MODE');
+                return emgReply;
             }
 
-            setTimeout(() => {
-                this._isFailingOver = false;
-            }, 1000);
-        }
-
-        // Disconnect Active Voice Session
-        disconnect() {
-            this.voiceActive = false;
-            if (this.activeProvider) {
-                try {
-                    this.activeProvider.disconnect();
-                } catch (e) {
-                    console.warn('[ReadyVerse AI] Error during provider disconnect:', e);
-                }
-            }
-            this.setState('DISCONNECTED');
-        }
-
-        // 2. Send Typed Text Message
-        async sendTextMessage(text) {
-            if (!text || !text.trim()) return false;
-            const cleanText = text.trim();
-
-            if (AIPersonality) {
-                this.lastDetectedLanguage = AIPersonality.detectLanguage(cleanText);
-            }
-
-            // If active in a live voice session with Gemini, send directly through live WebSocket
-            if (this.voiceActive && this.activeProvider && this.activeProvider.supportsVoice() && this.state !== 'DISCONNECTED') {
-                const sent = this.activeProvider.sendTextMessage(cleanText);
-                if (sent) {
+            // 3. Deterministic Quiz State Machine
+            if (QuizStateMachine) {
+                // Check if user requests a quiz
+                if (typeof QuizStateMachine.isQuizIntent === 'function' && QuizStateMachine.isQuizIntent(cleanText)) {
+                    const quizQuestion = QuizStateMachine.startQuiz(detectedLang);
                     this.conversationHistory.push({ role: 'user', content: cleanText });
-                    this.emit('transcript', { speaker: 'user', text: cleanText, isFinal: true });
-                    return true;
+                    this.conversationHistory.push({ role: 'assistant', content: quizQuestion });
+                    this.emit('transcript', {
+                        speaker: 'assistant',
+                        text: quizQuestion,
+                        sourceTag: 'Built-in',
+                        language: detectedLang,
+                        isFinal: true
+                    });
+                    this.setState('TEXT_MODE');
+                    return quizQuestion;
+                }
+
+                // Check if user is actively in a quiz
+                if (typeof QuizStateMachine.isInQuiz === 'function' && QuizStateMachine.isInQuiz()) {
+                    const evalResult = QuizStateMachine.evaluateAnswer(cleanText, detectedLang);
+                    if (evalResult && evalResult.handled) {
+                        this.conversationHistory.push({ role: 'user', content: cleanText });
+                        this.conversationHistory.push({ role: 'assistant', content: evalResult.response });
+                        this.emit('transcript', {
+                            speaker: 'assistant',
+                            text: evalResult.response,
+                            sourceTag: 'Built-in',
+                            language: detectedLang,
+                            isFinal: true
+                        });
+                        this.setState('TEXT_MODE');
+                        return evalResult.response;
+                    }
                 }
             }
 
-            // Otherwise process through chat fallback with automatic failover
-            return await this.sendChatFallback(cleanText);
-        }
+            // 4. Extract Real Live ReadyVerse Readiness & Context
+            const coachContext = (AIContext && typeof AIContext.getCoachContext === 'function')
+                ? AIContext.getCoachContext()
+                : ((AIContext && typeof AIContext.getReadyVerseContext === 'function') ? AIContext.getReadyVerseContext() : {});
 
-        // 3. Conversational Chat Router with Multi-Level Automatic Failover
-        async sendChatFallback(userText, options = {}) {
-            if (!userText || !userText.trim()) return null;
-            const cleanText = userText.trim();
+            // 5. Offline Check
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                this.enterOfflineReady('Browser is offline');
+                const offlineReply = this.generateGroundedFallback(cleanText, coachContext);
+                this.conversationHistory.push({ role: 'user', content: cleanText });
+                this.conversationHistory.push({ role: 'assistant', content: offlineReply });
+                this.emit('transcript', {
+                    speaker: 'assistant',
+                    text: offlineReply,
+                    sourceTag: 'Built-in',
+                    language: detectedLang,
+                    isFinal: true
+                });
+                this.setState('OFFLINE_READY');
+                return offlineReply;
+            }
 
-            this.conversationHistory.push({ role: 'user', content: cleanText });
-            this.emit('transcript', { speaker: 'user', text: cleanText, isFinal: true });
             this.setState('THINKING');
 
-            if (AIPersonality) {
-                this.lastDetectedLanguage = AIPersonality.detectLanguage(cleanText);
-            }
-
-            const contextData = AIContext ? AIContext.getReadyVerseContext() : {};
-            if (!this.isOnline) this.enterOfflineReady('Internet connection is unavailable.');
-            if (this.availability === 'OFFLINE_READY' || !this.activeProvider) {
-                const localReply = this.generateGroundedFallback(cleanText, contextData);
-                this.conversationHistory.push({ role: 'assistant', content: localReply });
-                this.emit('transcript', { speaker: 'assistant', text: localReply, isFinal: true, mode: 'offline' });
-                this.setState('OFFLINE_READY');
-                return localReply;
-            }
-            const systemPrompt = AIPersonality ? AIPersonality.buildAugmentedPrompt(contextData) : '';
-            const messages = [
-                { role: 'system', content: systemPrompt },
-                ...this.conversationHistory.slice(-8)
-            ];
-
-            const chatOptions = {
-                messages: messages,
-                systemInstruction: systemPrompt,
-                temperature: options.temperature || 0.7,
-                ...options
-            };
-
+            // 6. Network Dispatch to /api/coach
             let assistantReply = '';
-            let toolCalls = [];
+            let sourceTag = 'Built-in';
+            const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            const timeoutId = controller ? setTimeout(() => controller.abort(), 9500) : null;
 
-            // Step A: Attempt Active Provider (Gemini or Groq)
             try {
-                const responseData = await this.activeProvider.sendChatFallback(chatOptions);
-                this.emitAvailability(this.activeProviderName === this.fallbackProviderName ? 'CLOUD_BACKUP' : 'CLOUD_PRIMARY');
-                const parsed = this.parseProviderResponse(responseData);
-                if (!parsed.reply && !parsed.toolCalls.length) throw new Error('Provider returned no usable response.');
-                assistantReply = parsed.reply;
-                toolCalls = parsed.toolCalls;
-            } catch (primaryErr) {
-                console.warn(`[ReadyVerse AI Router] Provider '${this.activeProviderName}' failed:`, primaryErr.message);
+                const response = await fetch(`${this.serverUrl}/api/coach`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: cleanText,
+                        history: this.conversationHistory.slice(-6),
+                        context: coachContext,
+                        source: source,
+                        detectedLanguage: detectedLang
+                    }),
+                    signal: controller ? controller.signal : undefined
+                });
 
-                // Step B: If Primary (Gemini) failed, failover to Backup (Groq)
-                if (this.activeProviderName !== this.fallbackProviderName && this.providers[this.fallbackProviderName]) {
-                    this.activeProviderName = this.fallbackProviderName;
-                    this.activeProvider = this.providers[this.fallbackProviderName];
-                    this.failoverCount++;
+                if (timeoutId) clearTimeout(timeoutId);
 
-                    this.emit('failover', {
-                        from: this.primaryProviderName,
-                        to: this.fallbackProviderName,
-                        mode: 'text',
-                        reason: primaryErr.message
-                    });
-                    this.emitAvailability('CLOUD_BACKUP', primaryErr.message);
-
-                    try {
-                        (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(`[ReadyVerse AI Router] Attempting Backup Provider (${this.fallbackProviderName.toUpperCase()})...`);
-                        const backupResponse = await this.activeProvider.sendChatFallback(chatOptions);
-                        const parsed = this.parseProviderResponse(backupResponse);
-                        if (!parsed.reply && !parsed.toolCalls.length) throw new Error('Backup provider returned no usable response.');
-                        assistantReply = parsed.reply;
-                        toolCalls = parsed.toolCalls;
-                    } catch (backupErr) {
-                        console.warn('[ReadyVerse AI Router] Backup provider failed, engaging local offline fallback:', backupErr.message);
-                        // Step C: Grounded ReadyVerse Fallback
-                        assistantReply = this.generateGroundedFallback(cleanText, contextData);
-                        this.enterOfflineReady(backupErr.message);
+                if (response.status === 200) {
+                    const data = await response.json();
+                    if (data.ok === true) {
+                        sourceTag = 'AI';
+                        assistantReply = data.response;
+                        this.emitAvailability(data.provider === 'groq' ? 'CLOUD_BACKUP' : 'CLOUD_PRIMARY');
+                    } else {
+                        // Grounded local fallback provided by serverless coach handler
+                        sourceTag = 'Built-in';
+                        assistantReply = data.response || this.generateGroundedFallback(cleanText, coachContext);
+                        if (data.code === 'not_configured') {
+                            this.emitAvailability('OFFLINE_READY', 'AI key not configured on server. Built-in safety rules active.');
+                        }
                     }
+                } else if (response.status === 429) {
+                    const data = await response.json().catch(() => ({}));
+                    sourceTag = 'Built-in';
+                    assistantReply = data.message || 'Too many requests. Please wait a few moments before asking again.';
+                    this.emit('error', { code: 'rate_limited', message: assistantReply });
+                } else if (response.status === 400) {
+                    const data = await response.json().catch(() => ({}));
+                    sourceTag = 'Built-in';
+                    assistantReply = data.message || 'Please enter a valid disaster safety question.';
+                    this.emit('error', { code: 'bad_request', message: assistantReply });
                 } else {
-                    // Step C: Grounded ReadyVerse Fallback
-                    assistantReply = this.generateGroundedFallback(cleanText, contextData);
-                    this.enterOfflineReady(primaryErr.message);
+                    throw new Error(`Server returned HTTP ${response.status}`);
                 }
+            } catch (err) {
+                if (timeoutId) clearTimeout(timeoutId);
+                const isTimeout = err.name === 'AbortError';
+                const errCode = isTimeout ? 'timeout' : 'network';
+
+                console.warn(`[ReadyVerse AI] /api/coach unreachable (${errCode}):`, err.message);
+
+                assistantReply = this.generateGroundedFallback(cleanText, coachContext);
+                sourceTag = 'Built-in';
+
+                this.emit('error', {
+                    code: errCode,
+                    message: isTimeout
+                        ? 'Request timed out. Using built-in emergency guidance.'
+                        : 'AI coach offline. Using built-in emergency guidance.'
+                });
             }
 
-            // Execute any tool calls safely through authoritative ReadyVerse engine
-            if (toolCalls && toolCalls.length > 0) {
-                for (const tc of toolCalls) {
-                    (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(`[ReadyVerse AI] Executing tool '${tc.name}':`, tc.args);
-                    const toolResult = await AITools.executeTool(tc.name, tc.args);
-                    this.emit('toolCall', { name: tc.name, args: tc.args, result: toolResult });
-                }
-            }
-
-            if (!assistantReply && toolCalls.length > 0) {
-    const executedToolNames = toolCalls.map(tc => tc.name);
-
-    (typeof rvLog === "function" ? rvLog : (typeof window !== "undefined" && window.rvLog ? window.rvLog : () => {}))(
-        '[ReadyVerse AI] Tool execution completed:',
-        executedToolNames
-    );
-
-    // Tool calls are internal operations.
-    // They must NEVER be shown as the assistant's conversational answer.
-    //
-    // If the provider returned no final natural-language response,
-    // create a short contextual response based on the action performed.
-    const hasNavigation = executedToolNames.some(name =>
-        name === 'navigate_to_section' ||
-        name === 'open_disaster_module' ||
-        name === 'start_mission_simulation'
-    );
-
-    if (hasNavigation) {
-        assistantReply =
-            'Done — I’ve opened the requested ReadyVerse section for you.';
-    } else {
-        assistantReply =
-            'Done — I’ve updated the ReadyVerse information. What would you like to know next?';
-    }
-}
+            // 7. Push to history and emit transcript
+            this.conversationHistory.push({ role: 'user', content: cleanText });
             this.conversationHistory.push({ role: 'assistant', content: assistantReply });
-            this.emit('transcript', { speaker: 'assistant', text: assistantReply, isFinal: true });
-            this.setState(this.sessionMode === 'text' ? 'TEXT_MODE' : 'LISTENING');
 
+            this.emit('transcript', {
+                speaker: 'assistant',
+                text: assistantReply,
+                sourceTag: sourceTag,
+                language: detectedLang,
+                isFinal: true
+            });
+
+            this.setState(this.sessionMode === 'text' ? 'TEXT_MODE' : 'DISCONNECTED');
             return assistantReply;
         }
 
-        // Helper to normalize response formats across Gemini, Groq, and OpenAI
-        parseProviderResponse(responseData) {
-            let reply = '';
-            let toolCalls = [];
+        // Backward compatibility
+        async sendTextMessage(text) {
+            return await this.sendToCoach(text, 'typed');
+        }
 
-            if (!responseData) return { reply, toolCalls };
-
-            // Gemini format
-            if (responseData.candidates && responseData.candidates[0]) {
-                const candidate = responseData.candidates[0];
-                if (candidate.content && candidate.content.parts) {
-                    for (const part of candidate.content.parts) {
-                        if (part.text) reply += part.text;
-                        if (part.functionCall) {
-                            toolCalls.push({
-                                name: part.functionCall.name,
-                                args: part.functionCall.args || {}
-                            });
-                        }
-                    }
-                }
-            }
-            // Groq & OpenAI standard format
-            else if (responseData.choices && responseData.choices[0]) {
-                const message = responseData.choices[0].message || {};
-                reply = message.content || '';
-                if (message.tool_calls && Array.isArray(message.tool_calls)) {
-                    message.tool_calls.forEach(tc => {
-                        if (tc.function) {
-                            let args = {};
-                            try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
-                            toolCalls.push({ name: tc.function.name, args: args });
-                        }
-                    });
-                }
-            } else if (typeof responseData.response === 'string') {
-                reply = responseData.response;
-            } else if (typeof responseData.reply === 'string') {
-                reply = responseData.reply;
-            }
-
-            return { reply, toolCalls };
+        async sendChatFallback(text, options = {}) {
+            return await this.sendToCoach(text, 'typed');
         }
 
         // Local-only deterministic responses. Grounded in NDMA life-safety standards.
         generateGroundedFallback(userQuery, context) {
             const text = (userQuery || '').toLowerCase().trim();
 
-            // 1. Adversarial / Prompt Injection / Medical Refusals
+            // Language check
+            let isTanglish = false;
+            let isTamil = false;
+            if (LanguageDetector && typeof LanguageDetector.detectLanguage === 'function') {
+                const langRes = LanguageDetector.detectLanguage(userQuery, this.sessionLanguage);
+                isTanglish = (langRes.language === 'tanglish');
+                isTamil = (langRes.language === 'tamil');
+            } else {
+                isTanglish = [
+                    'bro', 'machan', 'machi', 'enna', 'pannanum', 'pannalam', 'irukku', 'iruku',
+                    'solunga', 'sollunga', 'thee', 'pidicha', 'epdi', 'eppadi', 'koodathu', 'mudiyum',
+                    'vantha', 'vandha', 'thambi', 'ena pandra', 'vena'
+                ].some(k => text.includes(k));
+            }
+
+            // 1. Adversarial / Medical Refusals
             const adversarialKeywords = [
                 'dan mode', 'ignore all', 'system prompt', 'secret', 'password', 'hack',
                 'tracheotomy', 'paracetamol', 'prescribe', 'dosage', 'pills', 'chest pain',
                 'cricket', 'world cup', 'python', 'script', 'homework', 'calculus', 'nuclear asteroid',
-                'bypass fire alarm', 'disable alarm', 'vip number', 'secret helpline', 'fever'
+                'bypass fire alarm', 'disable alarm', 'vip number', 'secret helpline', 'fever', 'bleach'
             ];
             if (adversarialKeywords.some(k => text.includes(k))) {
-                if (text.includes('enaku') || text.includes('sollu') || text.includes('iruku')) {
-                    return "I'm not sure, check the lesson or call 112. (மருத்துவ ஆலோசனைக்கு மருத்துவரை அணுகவும் அல்லது 108 / 112 எண்ணை அழைக்கவும்).";
+                if (isTanglish) {
+                    return "I'm not sure, check the lesson or call 112 bro. Maruthuva aalosanai-ku doctor-ah consult pannunga.";
+                }
+                if (isTamil) {
+                    return "எனக்கு உறுதியாகத் தெரியவில்லை, பாடத்தைப் பார்க்கவும் அல்லது 112ஐ அழைக்கவும். மருத்துவ உதவிக்கு 108 ஐ அழைக்கவும்.";
                 }
                 return "I'm not sure, check the lesson or call 112";
             }
 
-            // 2. Readiness & Progress Context Checks
-            if ((text.includes('readiness') || text.includes('score')) && context && context.readiness && Number.isFinite(context.readiness.totalReadiness)) {
-                return `Your current Readiness Score is ${context.readiness.totalReadiness}%. The AI friend is offline right now, but your drills, lessons, and safety scores are 100% active locally.`;
-            }
-            if ((text.includes('progress') || text.includes('completed')) && context && context.player) {
-                const p = context.player;
-                return `You have completed ${p.completedMissionsCount || 0} drills, ${p.completedLearnCount || 0} lessons, and ${p.completedPrepCount || 0} preparedness actions. The AI friend is offline right now. Check the lessons or call 112.`;
-            }
-
-            // 3. Quiz Me Request (Authentic lesson quiz question with options)
-            if (text.includes('quiz me') || text === 'quiz' || text.includes('quiz-me')) {
-                return "Here's a question from our Fire Safety & Evacuation lesson:\n\nWhy is crawling low under smoke essential during a building fire?\n1. It makes you move faster through doorways\n2. Toxic smoke and superheated gases rise, leaving cleaner air near the floor\n3. It prevents falling objects from touching you\n4. It keeps you hidden from outside heat\n\nWhich option is correct? Type 1, 2, 3, or 4!";
-            }
-
-            // Quiz Answer Evaluation (Option 2 for Q1)
-            if (text === '2' || text === 'option 2' || text.includes('cleaner air') || text.includes('toxic smoke and superheated')) {
-                return "Spot on! Toxic smoke and superheated gases rise, leaving cleaner air near the floor. Cooler, breathable air stays in the lower 12-24 inches. +20 XP ready! Tap 'Quiz me' for another question!";
-            } else if (text === '1' || text === '3' || text === '4' || text === 'option 1' || text === 'option 3' || text === 'option 4') {
-                return "Good try! The correct answer is 2: Toxic smoke and superheated gases rise, leaving cleaner air near the floor. Superheated smoke and lethal gases rise toward the ceiling; cooler, breathable air stays in the lower 12-24 inches. Tap 'Quiz me' to try another!";
+            // 2. Greetings & Chitchat ("Hy ena pandra")
+            if (text.includes('ena pandra') || text.includes('enna pandra') || text.includes('enna seira') ||
+                text === 'hy' || text === 'hi' || text === 'hello' || text === 'hey' || text === 'vanakkam' ||
+                text.startsWith('hi ') || text.startsWith('hey ') || text.startsWith('hello ')) {
+                if (isTanglish) {
+                    return "Hey bro! ReadyVerse safety coach inga. Un emergency drills, fire safety, cyclone, or campus safety pathi kelunga, ready-ah solren!";
+                }
+                if (isTamil) {
+                    return "வணக்கம்! நான் உங்கள் ReadyVerse பாதுகாப்பு பயிற்சியாளர். பேரிடர் பாதுகாப்பு பற்றி என்ன தெரிந்துகொள்ள வேண்டும்?";
+                }
+                return "Hey! I'm your ReadyVerse disaster safety coach. You can ask me about drills, fire safety, flood response, or readiness scores!";
             }
 
-            // 4. Tanglish Language Mirroring & Friendly Student Tone
-            const isTanglish = [
-                'bro', 'machan', 'machi', 'enna', 'pannanum', 'pannalam', 'irukku', 'iruku',
-                'lift-a', 'solunga', 'sollunga', 'vantha', 'vandha', 'thee', 'pidicha', 'epdi',
-                'eppadi', 'koodathu', 'mudiyum', 'illana', 'aagum', 'pathu', 'tanglish', 'tamil-la',
-                'thambi', 'enna panna'
-            ].some(m => text.includes(m));
+            // 3. ReadyVerse Platform Overview ("Tell me about ReadyVerse")
+            if (text.includes('about readyverse') || text.includes('what is readyverse') || text.includes('readyverse pathi') || text.includes('tell me about readyverse')) {
+                if (isTanglish) {
+                    return "ReadyVerse oru student disaster preparedness platform bro. Ithu 4 interactive drills (Fire, Flood, Cyclone, Earthquake), 6 NDMA lessons, 40-action campus safety plan, and comprehensive Readiness Score provide pannuthu!";
+                }
+                if (isTamil) {
+                    return "ReadyVerse என்பது மாணவர்களுக்கான பேரிடர் தயார்நிலை பயிற்சி தளம். இதில் 4 பயிற்சிகள் (தீ, வெள்ளம், புயல், நிலநடுக்கம்), 6 பாடங்கள் மற்றும் தயார்நிலை மதிப்பெண் உள்ளன.";
+                }
+                return "ReadyVerse is a student disaster preparedness platform featuring 4 simulation drills (Fire, Flood, Cyclone, Earthquake), 6 NDMA-aligned lessons, a 40-action dorm safety plan, and a comprehensive Readiness Score.";
+            }
 
-            if (isTanglish) {
-                if (text.includes('fire') || text.includes('thee') || text.includes('smoke') || text.includes('elevator') || text.includes('lift')) {
-                    if (text.includes('lift') || text.includes('elevator')) {
-                        return "Fire irukkum pothu lift kandippa use panna koodathu bro! Power cut aagalam illana smoke trap aagalam. Emergency staircase dhaan safest option.";
-                    }
-                    if (text.includes('clothes') || text.includes('aada') || text.includes('stop drop')) {
-                        return "Aadaila thee pidicha: Stop, Drop, and Roll (நில், விழு, உருளு) bro! Ooda koodathu, floor-la roll panni flames-ah extinguish pannunga.";
-                    }
-                    if (text.includes('pass') || text.includes('extinguisher') || text.includes('theeyanai')) {
-                        return "Fire extinguisher PASS method: P = Pull pin, A = Aim at base, S = Squeeze lever, S = Sweep side-to-side bro! Periya fire-na udane 101 or 112 call pannunga.";
-                    }
+            // 4. Readiness & Highest-Impact Action Queries
+            if (text.includes('readiness') || text.includes('score') || text.includes('highest-impact') || text.includes('highest impact') || text.includes('what should i do next')) {
+                let currentScore = 0;
+                let nextAction = 'Complete your next disaster simulation drill';
+                let gain = '+10.0%';
+
+                if (context && context.readiness) {
+                    currentScore = context.readiness.total || context.readiness.totalReadiness || 0;
+                }
+                if (context && context.prioritizedNextActions && context.prioritizedNextActions.length > 0) {
+                    const top = context.prioritizedNextActions[0];
+                    nextAction = top.action;
+                    gain = top.readinessImpact;
+                }
+
+                if (isTanglish) {
+                    return `Unga current Readiness Score ${currentScore}%. Ungalukku highest-impact next action: ${nextAction} (${gain} readiness boost)!`;
+                }
+                if (isTamil) {
+                    return `உங்கள் தற்போதைய தயார்நிலை மதிப்பெண் ${currentScore}%. அதிக தாக்கம் கொண்ட அடுத்த நடவடிக்கை: ${nextAction} (${gain}).`;
+                }
+                return `Your current Readiness Score is ${currentScore}%. Highest-impact next step: ${nextAction} (${gain} readiness gain).`;
+            }
+
+            // 5. Fire Safety Protocols ("What do I do in a fire?")
+            if (text.includes('fire') || text.includes('thee') || text.includes('smoke') || text.includes('புகை')) {
+                if (text.includes('lift') || text.includes('elevator')) {
+                    if (isTanglish) return "Fire irukkum pothu lift kandippa use panna koodathu bro! Power cut aagalam illana shaft vazhiya smoke trap aagalam. Emergency stairs dhaan use pannanum. Call 112.";
+                    return "Never use elevators during a fire. Elevators can lose power or fill with smoke. Always evacuate via marked emergency stairwells. Call 112.";
+                }
+                if (text.includes('clothes') || text.includes('aada') || text.includes('stop drop')) {
+                    if (isTanglish) return "Aadaila thee pidicha: Stop, Drop, and Roll (நில், விழு, உருளு) bro! Ooda koodathu. Face-ah cover pannitu floor-la roll pannunga. Call 101 or 112.";
+                    return "If your clothes catch fire: Stop, Drop, and Roll. Cover your face with your hands and roll to smother flames. Never run. Call 101 or 112.";
+                }
+                if (text.includes('pass') || text.includes('extinguisher') || text.includes('theeyanai')) {
+                    if (isTanglish) return "Fire extinguisher PASS method: P = Pull pin, A = Aim at base, S = Squeeze lever, S = Sweep side-to-side bro! Periya fire-na evacuate pannitu 101/112 call pannunga.";
+                    return "Fire extinguisher PASS technique: P = Pull the pin, A = Aim at the base of the fire, S = Squeeze the handle lever, S = Sweep side to side. For large fires, evacuate immediately and call 101 or 112.";
+                }
+                if (isTanglish) {
                     return "Building-la fire vantha: smoke keezha low-ah crawl pannunga bro. Lift use panna koodathu, emergency stairs vazhiya evacuate aaganum. Velila open ground assembly point-ku poitu 101 or 112-ku call pannunga.";
                 }
-                if (text.includes('flood') || text.includes('vellam') || text.includes('water')) {
-                    return "Flash flood-la higher floors-ku seekiram ponga bro (Vertical Evacuation). Moving water-la nadakka koodathu. Main power safe-ah cut pannitu 112-ku call pannunga.";
+                if (isTamil) {
+                    return "கட்டிடத்தில் தீ விபத்து ஏற்பட்டால்: புகைக்கு அடியில் தவழ்ந்து செல்லுங்கள், மின் தூக்கியைப் பயன்படுத்தாதீர்கள், படிக்கட்டுகள் வழியாக வெளியேறி 101 அல்லது 112 ஐ அழைக்கவும்.";
                 }
-                if (text.includes('cyclone') || text.includes('puyal') || text.includes('wind')) {
-                    return "Cyclone appo window illatha interior room-la safe-ah irunga bro. Glass kitta poga koodathu. Calm eye of storm vantha velila varatheenga. Call 112.";
-                }
-                if (text.includes('earthquake') || text.includes('nilanadukkam') || text.includes('shaking')) {
-                    return "Earthquake shaking appo: Drop, Cover, and Hold On bro! Sturdy desk keezha poi head protect pannunga. Shaking ninnathum stairs vazhiya open ground ponga. Call 112.";
-                }
-                if (text.includes('number') || text.includes('helpline') || text.includes('phone') || text.includes('call') || text.includes('en')) {
-                    return "Bro, official emergency numbers: 112 (National Emergency), 101 (Fire Service), 108 (Ambulance). Note panni vechukkonga!";
-                }
-                if (text.includes('hi') || text.includes('hello') || text.includes('hey') || text.includes('vanakkam')) {
-                    return "Hey bro! Naan unga ReadyVerse safety coach. Fire, flood, cyclone, or campus safety pathi ethu venumnalum kelunga, ready-ah solren!";
-                }
+                return "In a building fire: stay low and crawl under smoke, check doors with the back of your hand before opening, never use elevators, evacuate via marked stairs to the assembly area, and call 101 or 112.";
             }
 
-            // 5. Standard Safety Directives
-            if (text.includes('pass') || text.includes('extinguisher')) {
-                return "The PASS protocol for fire extinguishers is: P = Pull the pin, A = Aim at the base of the fire, S = Squeeze the handle lever, S = Sweep side-to-side. For major fires, evacuate and call 101 or 112.";
+            // 6. Flood Safety
+            if (text.includes('flood') || text.includes('vellam') || text.includes('water')) {
+                if (isTanglish) return "Flash flood-la higher floors-ku seekiram ponga bro (Vertical Evacuation). Moving water-la nadakka koodathu. Main power safe-ah cut pannitu 112-ku call pannunga.";
+                return "During a flash flood: move immediately to higher floors (vertical evacuation). Never walk or drive through moving water. Disconnect main power safely if water enters. Call 112.";
             }
-            if (text.includes('clothes') || text.includes('stop drop')) {
-                return "If clothes catch fire: Stop, Drop, and Roll (நில், விழு, உருளு). Cover your face and roll on the ground. Never run. Call 101 or 112.";
+
+            // 7. Cyclone Safety
+            if (text.includes('cyclone') || text.includes('puyal') || text.includes('wind')) {
+                if (isTanglish) return "Cyclone appo window illatha interior room-la safe-ah irunga bro. Glass windows kitta poga koodathu. Calm eye of storm vantha velila varatheenga. Call 112.";
+                return "During a cyclone: stay indoors in an interior room away from windows and glass. If the calm eye of the storm passes, do not go outside as severe winds will resume. Call 112.";
             }
-            if (text.includes('earthquake') || text.includes('shaking') || text.includes('drop cover')) {
-                return "During an earthquake: DROP, COVER, AND HOLD ON under a sturdy table or desk. Protect your head and neck. After shaking stops, evacuate calmly via stairs to an open assembly ground. Call 112.";
+
+            // 8. Earthquake Safety
+            if (text.includes('earthquake') || text.includes('nilanadukkam') || text.includes('shaking')) {
+                if (isTanglish) return "Earthquake shaking appo: Drop, Cover, and Hold On bro! Sturdy desk keezha poi head protect pannunga. Shaking ninnathum stairs vazhiya open ground ponga. Call 112.";
+                return "During earthquake shaking: Drop, Cover, and Hold On under a sturdy desk or table. Protect your head and neck. After shaking stops, evacuate calmly via stairs to open ground. Call 112.";
             }
-            if (text.includes('what do i do in a fire') || text.includes('what to do in a fire') || (text.includes('fire') && (text.includes('do') || text.includes('evacuate') || text.includes('smoke')))) {
-                return "In a building fire: stay low and crawl under smoke, check doors with the back of your hand before opening, never use elevators, evacuate via marked emergency stairs, and assemble at the assembly point. Call 101 or 112.";
+
+            // 9. Emergency Numbers (Matching full word boundaries, NOT single letters like 'en'!)
+            if (/\b(number|numbers|helpline|phone|emergency number|contact|112|101|108)\b/i.test(text)) {
+                if (isTanglish) return "Bro, official emergency numbers: 112 (National Emergency Support), 101 (Fire Service), and 108 (Ambulance). Note panni vechukkonga!";
+                return "Official Emergency Numbers in India: 112 (National Emergency Support), 101 (Fire Service), and 108 (Ambulance).";
             }
-            if (text.includes('fire') || text.includes('smoke') || text.includes('flood') || text.includes('cyclone')) {
-                return "In emergencies: follow NDMA protocols, evacuate immediately via stairs, and call 112 or 101 for fire.";
-            }
-            return "The AI friend is offline right now. Check the lessons or call 112.";
+
+            // Default safe guidance
+            return "I'm not sure, check the lesson or call 112";
         }
     }
 

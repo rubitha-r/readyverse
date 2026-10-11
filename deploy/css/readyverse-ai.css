@@ -664,3 +664,98 @@
         border-radius: 0;
     }
 }
+
+/* UI Polish: Source Badges, Clear Button, Retry Button, and 44px Tap Targets */
+.rv-ai-bubble-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 4px;
+}
+
+.rv-ai-source-badge {
+    font-size: 0.65rem;
+    padding: 1px 7px;
+    border-radius: 9999px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.rv-ai-source-badge.ai {
+    background: rgba(34, 211, 238, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.rv-ai-source-badge.builtin {
+    background: rgba(148, 163, 184, 0.12);
+    color: #cbd5e1;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.rv-ai-clear-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--rv-ai-text-muted);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rv-ai-clear-btn:hover {
+    color: #f8fafc;
+    border-color: rgba(255, 255, 255, 0.28);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.rv-ai-retry-btn {
+    margin-top: 6px;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+    font-size: 0.76rem;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 44px;
+    transition: background 0.2s;
+}
+
+.rv-ai-retry-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+}
+
+.rv-ai-chip {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.rv-ai-tts-toggle-btn {
+    min-height: 44px;
+}
+
+.rv-ai-close-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rv-ai-send-btn {
+    min-width: 44px;
+    min-height: 44px;
+}
+

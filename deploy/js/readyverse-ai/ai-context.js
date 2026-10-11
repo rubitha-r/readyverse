@@ -59,6 +59,18 @@
         return [];
     }
 
+    // Helper to safely access ReadyVerseProgress module across Node and Browser
+    function getProgressModule() {
+        if (typeof ReadyVerseProgress !== 'undefined') return ReadyVerseProgress;
+        if (typeof window !== 'undefined' && window.ReadyVerseProgress) return window.ReadyVerseProgress;
+        if (typeof global !== 'undefined' && global.ReadyVerseProgress) return global.ReadyVerseProgress;
+        try {
+            return require('../progress');
+        } catch (_) {
+            return null;
+        }
+    }
+
     // 1. Player Progress Context
     function getPlayerProgress() {
         const state = getState();
@@ -305,30 +317,73 @@
     // 5. Readiness Formula Context (40% Simulation Missions + 30% Preparedness Plan + 30% Learn Hub)
     function getReadinessContext() {
         const state = getState();
-        const completedMissions = state.completedMissionIds ? state.completedMissionIds.size : 0;
+        const progressMod = getProgressModule();
+        if (progressMod && typeof progressMod.calculateReadiness === 'function') {
+            const res = progressMod.calculateReadiness(state);
+            state.readiness = res.totalReadiness;
+            return {
+                totalReadiness: res.totalReadiness,
+                simulationScore: res.simulationScore,
+                learningScore: res.learningScore,
+                planScore: res.planScore,
+                breakdown: {
+                    missionPerformance: {
+                        weight: '40%',
+                        completedCount: `${state.completedMissionIds ? (state.completedMissionIds.size || state.completedMissionIds.length) : 0} / 4`,
+                        averageScorePct: res.simulationScore,
+                        componentPoints: res.breakdown.simWeighted,
+                        maxComponentPoints: 40
+                    },
+                    preparednessChecklist: {
+                        weight: '30%',
+                        completedCount: `${state.completedPrepItemIds ? (state.completedPrepItemIds.size || state.completedPrepItemIds.length) : 0} / 40`,
+                        completionPct: res.planScore,
+                        componentPoints: res.breakdown.planWeighted,
+                        maxComponentPoints: 30
+                    },
+                    learningHubKnowledge: {
+                        weight: '30%',
+                        completedCount: `${state.completedLearnIds ? (state.completedLearnIds.size || state.completedLearnIds.length) : 0} / 6`,
+                        completionPct: res.learningScore,
+                        componentPoints: res.breakdown.learnWeighted,
+                        maxComponentPoints: 30
+                    }
+                },
+                highestImpactNextStep: getHighestImpactRecommendation(
+                    state.completedMissionIds ? (state.completedMissionIds.size || state.completedMissionIds.length) : 0,
+                    state.completedPrepItemIds ? (state.completedPrepItemIds.size || state.completedPrepItemIds.length) : 0,
+                    state.completedLearnIds ? (state.completedLearnIds.size || state.completedLearnIds.length) : 0
+                )
+            };
+        }
+
+        const completedMissions = state.completedMissionIds ? (state.completedMissionIds.size || state.completedMissionIds.length) : 0;
         const bestScores = state.missionBestScores || {};
         
         let missionSum = 0;
         ['fire', 'flood', 'cyclone', 'earthquake'].forEach(k => {
-            if (state.completedMissionIds && state.completedMissionIds.has(k)) {
+            const hasDone = (state.completedMissionIds && typeof state.completedMissionIds.has === 'function')
+                ? state.completedMissionIds.has(k)
+                : (Array.isArray(state.completedMissionIds) && state.completedMissionIds.includes(k));
+            if (hasDone) {
                 missionSum += (typeof bestScores[k] === 'number') ? bestScores[k] : 0;
             }
         });
         const missionAvg = missionSum / 4;
         const missionComponent = Math.round(0.40 * missionAvg * 10) / 10;
 
-        const prepCount = state.completedPrepItemIds ? state.completedPrepItemIds.size : 0;
+        const prepCount = state.completedPrepItemIds ? (state.completedPrepItemIds.size || state.completedPrepItemIds.length) : 0;
         const prepPct = (prepCount / 40) * 100;
         const prepComponent = Math.round(0.30 * prepPct * 10) / 10;
 
-        const learnCount = state.completedLearnIds ? state.completedLearnIds.size : 0;
+        const learnCount = state.completedLearnIds ? (state.completedLearnIds.size || state.completedLearnIds.length) : 0;
         const learnPct = (learnCount / 6) * 100;
         const learnComponent = Math.round(0.30 * learnPct * 10) / 10;
 
         const totalReadiness = Math.round(missionComponent + prepComponent + learnComponent);
 
         return {
-            totalReadiness: Math.max(0, Math.min(100, state.readiness !== undefined ? state.readiness : totalReadiness)),
+            totalReadiness: totalReadiness,
             breakdown: {
                 missionPerformance: {
                     weight: '40%',
@@ -353,6 +408,118 @@
                 }
             },
             highestImpactNextStep: getHighestImpactRecommendation(completedMissions, prepCount, learnCount)
+        };
+    }
+
+    /**
+     * Phase 5: Real Readiness Coach Context extractor
+     * Reads LIVE state through ReadyVerseProgress API at send time (no cached copies).
+     * Strictly numbers only — no personal or medical data.
+     */
+    function getCoachContext(customState = null) {
+        const progressMod = getProgressModule();
+        let state = customState || getState();
+        if ((!state || Object.keys(state).length === 0) && progressMod && typeof progressMod.loadState === 'function') {
+            state = progressMod.loadState();
+        }
+
+        let readinessResult;
+        if (progressMod && typeof progressMod.calculateReadiness === 'function') {
+            readinessResult = progressMod.calculateReadiness(state);
+            if (state && typeof state === 'object') {
+                state.readiness = readinessResult.totalReadiness;
+            }
+        } else {
+            readinessResult = getReadinessContext();
+        }
+
+        const totalXP = Number(state.totalXP) || 0;
+        const levelInfo = progressMod && typeof progressMod.calculateLevel === 'function'
+            ? progressMod.calculateLevel(totalXP)
+            : { level: Math.floor(totalXP / 200) + 1, title: 'Rookie' };
+
+        const completedMissionsList = state.completedMissionIds ? Array.from(state.completedMissionIds) : [];
+        const completedMissions = completedMissionsList.length;
+        const bestScores = state.missionBestScores || {};
+        const completedLearnList = state.completedLearnIds ? Array.from(state.completedLearnIds) : [];
+        const completedLearnCount = completedLearnList.length;
+        const completedPrepCount = state.completedPrepItemIds ? (state.completedPrepItemIds.size !== undefined ? state.completedPrepItemIds.size : state.completedPrepItemIds.length) : 0;
+
+        // Prioritized next best actions calculated deterministically from formula:
+        const prioritized = [];
+        const order = ['fire', 'flood', 'cyclone', 'earthquake'];
+        const unplayedMission = order.find(k => !completedMissionsList.includes(k));
+
+        if (unplayedMission) {
+            const titles = { fire: 'Building Fire Drill', flood: 'Flash Flood Drill', cyclone: 'Cyclone Tracking Drill', earthquake: 'Earthquake Drill' };
+            prioritized.push({
+                priority: 1,
+                domain: 'drill',
+                target: unplayedMission,
+                action: `Complete ${titles[unplayedMission]}`,
+                readinessImpact: '+10.0%',
+                rationale: 'Simulation drills account for 40% of readiness. Each unplayed drill adds up to +10.0% to your readiness score.'
+            });
+        }
+
+        if (completedLearnCount < 6) {
+            prioritized.push({
+                priority: prioritized.length + 1,
+                domain: 'lesson',
+                action: 'Pass next Learn Hub lesson quiz',
+                readinessImpact: '+5.0%',
+                rationale: 'Learning Hub accounts for 30% of readiness. Each passed lesson module adds +5.0% readiness.'
+            });
+        }
+
+        if (completedPrepCount < 40) {
+            prioritized.push({
+                priority: prioritized.length + 1,
+                domain: 'plan',
+                action: 'Verify Dorm / Campus Preparedness Plan actions',
+                readinessImpact: '+0.75% per action',
+                rationale: 'Preparedness Plan accounts for 30% of readiness across 40 items (+0.75% per item).'
+            });
+        }
+
+        if (prioritized.length === 0) {
+            prioritized.push({
+                priority: 1,
+                domain: 'mastery',
+                action: 'Maintain daily streak and review campus safety procedures',
+                readinessImpact: '100% Maximum Readiness',
+                rationale: 'All drills, lessons, and plan actions have been completed.'
+            });
+        }
+
+        return {
+            readiness: {
+                total: readinessResult.totalReadiness,
+                simulationScore: readinessResult.simulationScore,
+                learningScore: readinessResult.learningScore,
+                planScore: readinessResult.planScore,
+                breakdown: readinessResult.breakdown || {
+                    simWeighted: Math.round(0.40 * readinessResult.simulationScore * 10) / 10,
+                    learnWeighted: Math.round(0.30 * readinessResult.learningScore * 10) / 10,
+                    planWeighted: Math.round(0.30 * readinessResult.planScore * 10) / 10
+                }
+            },
+            player: {
+                level: levelInfo.level,
+                levelTitle: levelInfo.title,
+                totalXP: totalXP,
+                dailyStreak: state.dailyStreak || 0,
+                drillsCompletedCount: completedMissions,
+                drillsAccuracies: {
+                    fire: bestScores.fire || 0,
+                    flood: bestScores.flood || 0,
+                    cyclone: bestScores.cyclone || 0,
+                    earthquake: bestScores.earthquake || 0
+                },
+                lessonsPassedCount: completedLearnCount,
+                planActionsDoneCount: completedPrepCount
+            },
+            prioritizedNextActions: prioritized
         };
     }
 
@@ -498,6 +665,7 @@
         getReadinessContext: getReadinessContext,
         getVideoContext: getVideoContext,
         getCampusContext: getCampusContext,
-        getReadyVerseContext: getReadyVerseContext
+        getReadyVerseContext: getReadyVerseContext,
+        getCoachContext: getCoachContext
     };
 }));

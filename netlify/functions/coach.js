@@ -5,8 +5,10 @@
 const coachHandler = require('../../api/coach');
 
 exports.handler = async function (event, context) {
+    const httpMethod = (event && event.httpMethod) ? event.httpMethod.toUpperCase() : 'POST';
+
     // Handle CORS preflight
-    if (event.httpMethod === 'OPTIONS') {
+    if (httpMethod === 'OPTIONS') {
         return {
             statusCode: 204,
             headers: {
@@ -18,7 +20,21 @@ exports.handler = async function (event, context) {
         };
     }
 
-    if (event.httpMethod !== 'POST') {
+    // Health check via GET
+    if (httpMethod === 'GET') {
+        const result = await coachHandler.handleCoachRequest({ health: true }, 'health-check');
+        return {
+            statusCode: 200,
+            headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'no-cache, no-store, must-revalidate'
+            },
+            body: JSON.stringify(result.body)
+        };
+    }
+
+    if (httpMethod !== 'POST') {
         return {
             statusCode: 405,
             headers: {
@@ -30,18 +46,19 @@ exports.handler = async function (event, context) {
     }
 
     let bodyData = {};
-    if (event.body) {
+    if (event && event.body) {
         try {
-            bodyData = JSON.parse(event.body);
+            bodyData = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
         } catch (_) {
             bodyData = { message: event.body };
         }
     }
 
-    const clientIp = event.headers['client-ip'] || event.headers['x-forwarded-for'] || 'anonymous';
+    const headers = (event && event.headers) || {};
+    const clientIp = headers['client-ip'] || headers['x-forwarded-for'] || 'anonymous';
     const result = await coachHandler.handleCoachRequest(bodyData, clientIp);
 
-    const headers = {
+    const responseHeaders = {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
         ...(result.headers || {})
@@ -49,7 +66,7 @@ exports.handler = async function (event, context) {
 
     return {
         statusCode: result.statusCode || 200,
-        headers: headers,
+        headers: responseHeaders,
         body: JSON.stringify(result.body)
     };
 };
