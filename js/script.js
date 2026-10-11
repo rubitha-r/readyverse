@@ -180,7 +180,7 @@ const RESPONDER_CUSTOMIZATIONS = {
         { id: "readyverse_master", name: "ReadyVerse Master", icon: "👑", reqAchievement: "Preparedness Master", desc: "Awarded for completing all 40 structured preparedness records." }
     ],
     outfits: [
-        { id: "responder_standard", name: "Standard Cadet Vest", icon: "🧑‍🚒", cssClass: "outfit-standard", reqAchievement: null, desc: "High-visibility cadet field safety vest." },
+        { id: "responder_standard", name: "Starter vest", icon: "🧑‍🚒", cssClass: "outfit-standard", reqAchievement: null, desc: "High-visibility cadet field safety vest." },
         { id: "flood_gear", name: "Swiftwater Response Gear", icon: "🌊", cssClass: "outfit-flood", reqAchievement: "Flood Survivor", desc: "Reflective waterproof protective gear." },
         { id: "storm_gear", name: "Storm Weather Gear", icon: "🌪️", cssClass: "outfit-storm", reqAchievement: "Storm Master", desc: "Heavy-duty wind and rain outer shell." },
         { id: "campus_safety_gear", name: "Campus Safety Gear", icon: "🦺", cssClass: "outfit-medic", reqAchievement: "Preparedness Starter", desc: "Campus safety volunteer uniform and utility pouch." },
@@ -234,6 +234,8 @@ function saveProgress() {
 function loadProgress() {
     if (typeof ReadyVerseProgress !== "undefined" && typeof ReadyVerseProgress.loadState === "function") {
         ReadyVerseProgress.loadState(state);
+        const lvl = (typeof calculateLevel === "function") ? calculateLevel(state.totalXP || 0) : { level: Math.floor((state.totalXP || 0) / 200) + 1 };
+        state._lastCelebratedLevel = lvl.level;
         applyTheme(state.themePreference || (localStorage.getItem("readyverse_theme_preference") || "system"));
         return;
     }
@@ -241,6 +243,7 @@ function loadProgress() {
     const saved = localStorage.getItem(STORAGE_KEY);
 
     if (!saved) {
+        state._lastCelebratedLevel = 1;
         applyTheme(state.themePreference || (localStorage.getItem("readyverse_theme_preference") || "system"));
         return;
     }
@@ -300,7 +303,7 @@ function loadProgress() {
             progress.dailyStreak ?? state.dailyStreak;
 
         state.longestStreak =
-            progress.longestStreak ?? Math.max(state.dailyStreak, 1);
+            progress.longestStreak ?? Math.max(state.dailyStreak, 0);
 
         state.lastActivityDate =
             progress.lastActivityDate ?? state.lastActivityDate;
@@ -348,6 +351,9 @@ function loadProgress() {
     } catch (error) {
         console.error("Could not load ReadyVerse progress:", error);
     }
+
+    const lvl = (typeof calculateLevel === "function") ? calculateLevel(state.totalXP || 0) : { level: Math.floor((state.totalXP || 0) / 200) + 1 };
+    state._lastCelebratedLevel = lvl.level;
 
     applyTheme(state.themePreference);
 }
@@ -1195,6 +1201,10 @@ function switchProfileSubTab(subTabName) {
         if (target && typeof target.scrollIntoView === "function") {
             setTimeout(() => target.scrollIntoView({ behavior: "smooth" }), 100);
         }
+    }
+
+    if (activeTab === "leaderboard" && typeof updateLeaderboard === "function") {
+        updateLeaderboard();
     }
 
     if (typeof updateAchievements === "function") {
@@ -5881,7 +5891,7 @@ function getStudentFirstName() {
  */
 function getDrillShareData(drillKey) {
     const firstName = getStudentFirstName();
-    const streak = (typeof state !== "undefined" && state.dailyStreak) ? state.dailyStreak : 1;
+    const streak = (typeof state !== "undefined" && typeof state.dailyStreak === "number") ? state.dailyStreak : 0;
 
     if (drillKey === "daily" || (!state.lastResult && typeof dailyDrillSession !== "undefined" && dailyDrillSession.isFinished)) {
         const correct = (typeof dailyDrillSession !== "undefined" && dailyDrillSession.correctCount !== undefined)
@@ -7424,10 +7434,10 @@ function finishDailyDrill(timeExpired = false) {
 
     const streakEl = $("dailyDrillResultStreak");
     if (streakEl) {
-        const streakVal = state.dailyStreak || 1;
+        const streakVal = (typeof state.dailyStreak === "number") ? state.dailyStreak : 0;
         streakEl.textContent = isTamil
             ? `🔥 ${streakVal} நாள்`
-            : `🔥 ${streakVal} Day${streakVal > 1 ? "s" : ""}`;
+            : `🔥 ${streakVal} ${streakVal === 1 ? "Day" : "Days"}`;
     }
 
     const lessonText = $("dailyDrillLessonText");
@@ -8014,12 +8024,14 @@ function updateDashboardStats() {
         homeLevelXpSub.textContent = `${xpIn} / 200 XP · ${xpReq} XP to Level ${lvl.level + 1}`;
     }
 
-    const prevCelebratedLevel = state._lastCelebratedLevel || 1;
-    if (lvl.level > prevCelebratedLevel && state.totalXP > 0) {
+    const prevCelebratedLevel = state._lastCelebratedLevel;
+    if (typeof prevCelebratedLevel === "number" && lvl.level > prevCelebratedLevel && state.totalXP > 0) {
         state._lastCelebratedLevel = lvl.level;
         if (typeof triggerCelebration === "function") {
             triggerCelebration("level_up", { level: lvl.level, title: lvl.title });
         }
+    } else if (typeof prevCelebratedLevel !== "number") {
+        state._lastCelebratedLevel = lvl.level;
     }
 
     // Tile 3: Readiness Score
@@ -8797,8 +8809,10 @@ function updateProgressPage() {
 
 const ACHIEVEMENT_CAPABILITY_MAP = {
     "First Mission Completed": "mission_replay_lab",
+    "First Drill Completed": "mission_replay_lab",
     "Perfect Response": "precision_mode",
     "All 4 Missions Completed": "all_hazard_command_kit",
+    "All 4 Drills Completed": "all_hazard_command_kit",
     "Level 5 Achieved": "command_briefing",
     "Quick Thinker": "rapid_response_toolkit",
     "Flood Survivor": "flood_escape_planner",
@@ -8813,9 +8827,11 @@ const ACHIEVEMENT_CAPABILITY_MAP = {
 
 const achievementRewards = {
     "First Mission Completed": 50,
+    "First Drill Completed": 50,
     "First Response": 50,
     "Perfect Response": 100,
     "All 4 Missions Completed": 200,
+    "All 4 Drills Completed": 200,
     "Level 5 Achieved": 100,
     "Quick Thinker": 75,
     "Flood Survivor": 75,
@@ -8857,8 +8873,10 @@ function checkAndToastNewAchievements() {
     );
 
     const definitions = [
+        { id: "First Drill Completed", test: state.completedMissions >= 1 || (state.completedMissionIds && state.completedMissionIds.size >= 1) },
         { id: "First Mission Completed", test: state.completedMissions >= 1 || (state.completedMissionIds && state.completedMissionIds.size >= 1) },
         { id: "Perfect Response", test: (state.lastResult && state.lastResult.score >= 95) || Object.values(state.missionBestScores || {}).some(s => s >= 95) },
+        { id: "All 4 Drills Completed", test: ["fire", "flood", "cyclone", "earthquake"].every(id => state.completedMissionIds && state.completedMissionIds.has(id)) },
         { id: "All 4 Missions Completed", test: ["fire", "flood", "cyclone", "earthquake"].every(id => state.completedMissionIds && state.completedMissionIds.has(id)) },
         { id: "Level 5 Achieved", test: currentLevel >= 5 || (state.totalXP || 0) >= 800 },
         { id: "Quick Thinker", test: state.correctDecisions >= 5 },
@@ -8939,8 +8957,8 @@ const CAPABILITIES_CATALOG = {
         icon: "🔬",
         category: "PRACTICE TOOL",
         shortDesc: "See what happened after your choices.",
-        achievementId: "First Mission Completed",
-        howToUnlock: "Complete your first disaster mission.",
+        achievementId: "First Drill Completed",
+        howToUnlock: "Complete your first emergency drill.",
         whatYouGet: [
             "Step-by-step review of the choices you made",
             "What happened immediately after each decision",
@@ -8951,7 +8969,7 @@ const CAPABILITIES_CATALOG = {
             return `
                 <div class="capability-tool-container">
                     <div class="cap-tool-header">
-                        <div class="cap-tool-title">MISSION REPLAY & DECISION REVIEW</div>
+                        <div class="cap-tool-title">DRILL REPLAY & DECISION REVIEW</div>
                         <p class="cap-tool-desc">Look back at your completed simulations and review the key safety rules.</p>
                     </div>
                     <div class="cap-replay-sessions">
@@ -8959,7 +8977,7 @@ const CAPABILITIES_CATALOG = {
                         ${history.length === 0 ? `
                             <div class="cap-empty-box">
                                 <span>📋</span>
-                                <p>No completed drills yet. Finish any disaster mission to review your decisions here.</p>
+                                <p>No completed drills yet. Finish any emergency drill to review your decisions here.</p>
                             </div>
                         ` : `
                             <div class="cap-history-list">
@@ -9577,7 +9595,7 @@ const CAPABILITIES_CATALOG = {
                             </div>
                             <div class="cap-pass-row">
                                 <span>ACTIVE STREAK & SESSIONS</span>
-                                <strong>${st.dailyStreak || 1} Days Active &bull; ${st.completedMissions || 0} Drills Completed</strong>
+                                <strong>${(typeof st.dailyStreak === "number") ? st.dailyStreak : 0} ${((typeof st.dailyStreak === "number" ? st.dailyStreak : 0) === 1) ? "Day" : "Days"} Active &bull; ${st.completedMissions || 0} Drills Completed</strong>
                             </div>
                         </div>
                         <div class="cap-passport-footer">
@@ -9761,9 +9779,11 @@ function updateAchievements() {
     );
 
     const conditions = {
+        "First Drill Completed": state.completedMissions >= 1 || (state.completedMissionIds && state.completedMissionIds.size >= 1),
         "First Mission Completed": state.completedMissions >= 1 || (state.completedMissionIds && state.completedMissionIds.size >= 1),
         "First Response": state.completedMissions >= 1 || (state.completedMissionIds && state.completedMissionIds.size >= 1),
         "Perfect Response": (state.lastResult && state.lastResult.score >= 95) || Object.values(state.missionBestScores || {}).some(s => s >= 95),
+        "All 4 Drills Completed": ["fire", "flood", "cyclone", "earthquake"].every(id => state.completedMissionIds && state.completedMissionIds.has(id)),
         "All 4 Missions Completed": ["fire", "flood", "cyclone", "earthquake"].every(id => state.completedMissionIds && state.completedMissionIds.has(id)),
         "Level 5 Achieved": currentLevel >= 5 || (state.totalXP || 0) >= 800,
         "Quick Thinker": state.correctDecisions >= 5,
@@ -9952,80 +9972,178 @@ function updateAchievements() {
    ========================================================= */
 
 const leaderboardPeers = [
-    { name: "ARJUN", avatar: "A", xp: 3850 },
-    { name: "SHRUTHI", avatar: "S", xp: 3420 },
-    { name: "KARTHIK", avatar: "K", xp: 2380 },
-    { name: "PRIYA", avatar: "P", xp: 1950 }
+    { firstName: "ARJUN", name: "ARJUN", avatar: "A", totalXP: 3850, weeklyXP: 420, level: 19, title: "Guardian", streak: 14 },
+    { firstName: "SHRUTHI", name: "SHRUTHI", avatar: "S", totalXP: 3420, weeklyXP: 380, level: 17, title: "Guardian", streak: 10 },
+    { firstName: "KARTHIK", name: "KARTHIK", avatar: "K", totalXP: 2380, weeklyXP: 290, level: 12, title: "Responder", streak: 7 },
+    { firstName: "PRIYA", name: "PRIYA", avatar: "P", totalXP: 1950, weeklyXP: 210, level: 10, title: "Responder", streak: 5 }
 ];
 
 
-function updateLeaderboard() {
+async function updateLeaderboard() {
+    const leaderboardContainer = document.querySelector("#leaderboardContent .leaderboard");
+    if (!leaderboardContainer) return;
 
-    const leaderboardContainer =
-        document.querySelector(
-            "#leaderboardContent .leaderboard"
-        );
+    const sampleNotice = document.getElementById("leaderboardSampleNotice");
+    const activeClassBanner = document.getElementById("activeClassBanner");
+    const activeClassNameDisplay = document.getElementById("activeClassNameDisplay");
+    const activeClassCodeDisplay = document.getElementById("activeClassCodeDisplay");
+    const activeClassRoleBadge = document.getElementById("activeClassRoleBadge");
+    const classEnrollmentBlock = document.getElementById("classEnrollmentBlock");
+    const timeframeAllTimeBtn = document.getElementById("timeframeAllTimeBtn");
+    const timeframeWeeklyBtn = document.getElementById("timeframeWeeklyBtn");
 
+    const currentActiveTimeframe = state.leaderboardTimeframe || "all-time";
 
-    if (!leaderboardContainer) {
-
-        return;
-
+    // Update timeframe buttons styling
+    if (timeframeAllTimeBtn && timeframeWeeklyBtn) {
+        if (currentActiveTimeframe === "weekly") {
+            timeframeWeeklyBtn.classList.add("active");
+            timeframeWeeklyBtn.style.background = "var(--purple-bright)";
+            timeframeWeeklyBtn.style.color = "#fff";
+            timeframeWeeklyBtn.style.borderColor = "var(--purple-bright)";
+            timeframeAllTimeBtn.classList.remove("active");
+            timeframeAllTimeBtn.style.background = "var(--panel)";
+            timeframeAllTimeBtn.style.color = "var(--muted)";
+            timeframeAllTimeBtn.style.borderColor = "var(--border)";
+        } else {
+            timeframeAllTimeBtn.classList.add("active");
+            timeframeAllTimeBtn.style.background = "var(--purple-bright)";
+            timeframeAllTimeBtn.style.color = "#fff";
+            timeframeAllTimeBtn.style.borderColor = "var(--purple-bright)";
+            timeframeWeeklyBtn.classList.remove("active");
+            timeframeWeeklyBtn.style.background = "var(--panel)";
+            timeframeWeeklyBtn.style.color = "var(--muted)";
+            timeframeWeeklyBtn.style.borderColor = "var(--border)";
+        }
     }
 
+    const isInClass = Boolean(state.activeClass && state.activeClass.code);
 
-    const activeOutfit = (typeof RESPONDER_CUSTOMIZATIONS !== "undefined" && state.responderProfile)
-        ? (RESPONDER_CUSTOMIZATIONS.outfits.find(o => o.id === state.responderProfile.outfitId) || { icon: "R" })
-        : { icon: "R" };
-    const userName = (state.prepProfile?.name || state.responderProfile?.name || "YOU").toUpperCase();
+    if (isInClass) {
+        // --- 1. STUDENT IS ENROLLED IN A REAL CLASS ---
+        if (sampleNotice) sampleNotice.style.display = "none";
+        if (activeClassBanner) {
+            activeClassBanner.classList.remove("hidden");
+            activeClassBanner.style.display = "block";
+        }
+        if (activeClassNameDisplay) activeClassNameDisplay.textContent = state.activeClass.name || "Campus Cohort";
+        if (activeClassCodeDisplay) activeClassCodeDisplay.textContent = state.activeClass.code || "------";
+        if (activeClassRoleBadge) activeClassRoleBadge.textContent = (state.activeClass.role || "student").toUpperCase();
+        if (classEnrollmentBlock) classEnrollmentBlock.style.display = "none";
 
-    const allPlayers = [
-        ...leaderboardPeers.map(peer => ({ ...peer, isUser: false })),
-        { name: (userName === "READY TRAINEE" || userName === "READY STUDENT" || userName === "STUDENT") ? "YOU" : userName, avatar: activeOutfit.icon || "R", xp: state.totalXP, isUser: true }
-    ];
+        let members = [];
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            const res = await ReadyVerseSync.instance.fetchClassLeaderboard(state.activeClass.id, currentActiveTimeframe, state);
+            if (res && res.members) {
+                members = res.members;
+            }
+        }
 
+        if (!members || members.length === 0) {
+            // Fallback user row in class
+            const userTotalXP = Number(state.totalXP || 0);
+            const userLevelInfo = (typeof calculateLevel === "function") ? calculateLevel(userTotalXP) : { level: 1, title: "Rookie" };
+            members = [{
+                firstName: "YOU",
+                avatar: "🧑‍🚒",
+                level: userLevelInfo.level,
+                title: userLevelInfo.title,
+                totalXP: userTotalXP,
+                weeklyXP: userTotalXP,
+                streak: Number(state.dailyStreak || 0),
+                isUser: true
+            }];
+        }
 
-    /* Sort players descending by XP */
+        leaderboardContainer.innerHTML = members.map((player, index) => {
+            const rank = `#${String(index + 1).padStart(2, "0")}`;
+            const userClass = player.isUser ? " current-user" : "";
+            const tierClass = index === 0 ? " first" : index === 1 ? " second" : "";
+            const displayedXP = currentActiveTimeframe === "weekly"
+                ? `${formatNumber(player.weeklyXP || 0)} XP`
+                : `${formatNumber(player.totalXP || 0)} XP`;
 
-    allPlayers.sort(
-        (a, b) => b.xp - a.xp
-    );
-
-
-    leaderboardContainer.innerHTML =
-        allPlayers
-            .map((player, index) => {
-
-                const rank =
-                    `#${String(index + 1).padStart(2, "0")}`;
-
-
-                const userClass =
-                    player.isUser
-                        ? " current-user"
-                        : "";
-
-
-                const tierClass =
-                    index === 0
-                        ? " first"
-                        : index === 1
-                            ? " second"
-                            : "";
-
-
-                return `
-                    <div class="leader-row${tierClass}${userClass}">
-                        <span>${rank}</span>
-                        <div class="leader-avatar">${player.avatar}</div>
-                        <strong>${player.name}</strong>
-                        <span>${formatNumber(player.xp)} XP</span>
+            return `
+                <div class="leader-row${tierClass}${userClass}">
+                    <span>${rank}</span>
+                    <div class="leader-avatar">${player.avatar || "🧑‍🚒"}</div>
+                    <div>
+                        <strong>${player.firstName || "STUDENT"}</strong>
+                        <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+                            <span>Lvl ${player.level || 1} · ${player.title || "Rookie"}</span>
+                            <span style="margin-left: 8px;">🔥 ${player.streak || 0}d streak</span>
+                        </div>
                     </div>
-                `;
+                    <span style="text-align: right; font-weight: 700;">${displayedXP}</span>
+                </div>
+            `;
+        }).join("");
 
-            })
-            .join("");
+    } else {
+        // --- 2. STUDENT IS NOT IN A CLASS (SAMPLE DATA FALLBACK) ---
+        if (sampleNotice) sampleNotice.style.display = "block";
+        if (activeClassBanner) {
+            activeClassBanner.classList.add("hidden");
+            activeClassBanner.style.display = "none";
+        }
+        if (classEnrollmentBlock) classEnrollmentBlock.style.display = "block";
 
+        const activeOutfit = (typeof RESPONDER_CUSTOMIZATIONS !== "undefined" && state.responderProfile)
+            ? (RESPONDER_CUSTOMIZATIONS.outfits.find(o => o.id === state.responderProfile.outfitId) || { icon: "R" })
+            : { icon: "R" };
+        const rawUserName = (state.prepProfile?.name || state.responderProfile?.name || "YOU").trim();
+        const userName = (rawUserName === "READY TRAINEE" || rawUserName === "READY STUDENT" || rawUserName === "STUDENT") ? "YOU" : rawUserName.split(" ")[0].toUpperCase();
+
+        const userTotalXP = Number(state.totalXP || 0);
+        const userLevelInfo = (typeof calculateLevel === "function") ? calculateLevel(userTotalXP) : { level: 1, title: "Rookie" };
+        const userStreak = Number(state.dailyStreak || 0);
+
+        const allPlayers = [
+            ...leaderboardPeers.map(peer => ({ ...peer, isUser: false })),
+            {
+                firstName: userName,
+                name: userName,
+                avatar: activeOutfit.icon || "R",
+                totalXP: userTotalXP,
+                weeklyXP: userTotalXP,
+                level: userLevelInfo.level,
+                title: userLevelInfo.title,
+                streak: userStreak,
+                isUser: true
+            }
+        ];
+
+        // Sort players descending by active timeframe
+        if (currentActiveTimeframe === "weekly") {
+            allPlayers.sort((a, b) => b.weeklyXP - a.weeklyXP || b.totalXP - a.totalXP);
+        } else {
+            allPlayers.sort((a, b) => b.totalXP - a.totalXP || b.streak - a.streak);
+        }
+
+        leaderboardContainer.innerHTML = allPlayers.map((player, index) => {
+            const rank = `#${String(index + 1).padStart(2, "0")}`;
+            const userClass = player.isUser ? " current-user" : "";
+            const tierClass = index === 0 ? " first" : index === 1 ? " second" : "";
+            const displayedXP = currentActiveTimeframe === "weekly"
+                ? `${formatNumber(player.weeklyXP || 0)} XP`
+                : `${formatNumber(player.totalXP || 0)} XP`;
+
+            return `
+                <div class="leader-row${tierClass}${userClass}">
+                    <span>${rank}</span>
+                    <div class="leader-avatar">${player.avatar}</div>
+                    <div>
+                        <strong>${player.firstName || player.name}</strong>
+                        <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+                            <span>Lvl ${player.level || 1} · ${player.title || "Rookie"}</span>
+                            <span style="margin-left: 8px;">🔥 ${player.streak || 0}d streak</span>
+                        </div>
+                    </div>
+                    <span style="text-align: right; font-weight: 700;">${displayedXP}</span>
+                </div>
+            `;
+        }).join("");
+    }
 }
 
 
@@ -12744,7 +12862,8 @@ function renderResponderProfile() {
     if (profileLevelText) profileLevelText.textContent = String(lvl.level || 1).padStart(2, "0");
     if (profileXPText) profileXPText.textContent = (state.totalXP || 0).toLocaleString();
     if (profileReadinessText) profileReadinessText.textContent = (state.readiness || 0) + "%";
-    if (profileStreakText) profileStreakText.textContent = (state.dailyStreak || 1) + " Day" + ((state.dailyStreak || 1) > 1 ? "s" : "");
+    const curStreak = (typeof state.dailyStreak === "number") ? state.dailyStreak : 0;
+    if (profileStreakText) profileStreakText.textContent = `${curStreak} ${curStreak === 1 ? "Day" : "Days"}`;
 
     // Update Header Profile Mini
     const headerProfileName = $("headerProfileName");
@@ -13145,7 +13264,7 @@ function renderReadinessPassport() {
 
     const activeOutfit = (typeof RESPONDER_CUSTOMIZATIONS !== "undefined" && RESPONDER_CUSTOMIZATIONS.outfits)
         ? (RESPONDER_CUSTOMIZATIONS.outfits.find(o => o.id === state.responderProfile.outfitId) || RESPONDER_CUSTOMIZATIONS.outfits[0])
-        : { name: "Standard Cadet Vest", icon: "🧑‍🚒", cssClass: "outfit-standard" };
+        : { name: "Starter vest", icon: "🧑‍🚒", cssClass: "outfit-standard" };
 
     const activeFrame = (typeof RESPONDER_CUSTOMIZATIONS !== "undefined" && RESPONDER_CUSTOMIZATIONS.frames)
         ? (RESPONDER_CUSTOMIZATIONS.frames.find(f => f.id === state.responderProfile.frameId) || RESPONDER_CUSTOMIZATIONS.frames[0])
@@ -13156,7 +13275,7 @@ function renderReadinessPassport() {
     const lvl = calculateLevel(state.totalXP || 0);
     const totalXP = state.totalXP || 0;
     const readiness = calculateReadiness();
-    const streak = state.dailyStreak || 1;
+    const streak = (typeof state.dailyStreak === "number") ? state.dailyStreak : 0;
 
     // DOM Identity elements
     const passportStudentName = $("passportStudentName");
@@ -14073,79 +14192,158 @@ function renderCampusAARHistory() {
     }).join("");
 }
 
-function renderCampusAggregateView() {
+async function renderCampusAggregateView() {
     const grid = $("campusAggregateGrid");
     if (!grid) return;
 
-    const tabletopCount = state.campusStudio?.completedExercisesCount || (state.campusStudio?.tabletopResolved ? 1 : 0);
-    const aarRecords = state.campusStudio?.aarRecords || [];
-    const aarCount = aarRecords.length;
-    const observations = state.campusStudio?.observations || {};
-    const obsCount = Object.keys(observations).filter(k => observations[k] && observations[k].status).length;
-    const openActionsCount = aarRecords.filter(r => r.status === "Open" || r.status === "In Progress" || !r.status).length;
-    const completedActionsCount = aarRecords.filter(r => r.status === "Completed").length;
+    const isClassOwner = (state.campusStudio?.activeRole === "facilitator") || 
+                         (state.activeClass && (state.activeClass.role === "facilitator" || state.activeClass.role === "owner"));
 
-    let nextReviewDate = "Not scheduled";
-    for (const r of aarRecords) {
-        if (r.reviewDate && r.reviewDate !== "Not scheduled" && (r.status === "Open" || r.status === "In Progress")) {
-            nextReviewDate = r.reviewDate;
-            break;
-        }
-    }
-
-    const hasCampusActivity = (tabletopCount > 0 || aarCount > 0 || obsCount > 0 || openActionsCount > 0);
-
-    let noticeHtml = '<div class="campus-demo-notice-bar" style="grid-column: 1 / -1; background: rgba(124, 58, 237, 0.08); border: 1px solid rgba(124, 58, 237, 0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 6px;">' +
-        '<strong style="color: #c084fc; font-size: 11px; display: block; margin-bottom: 2px;">📍 CAMPUS PREPAREDNESS STUDIO — INSTITUTIONAL RECORD</strong>' +
-        '<p style="color: var(--muted); font-size: 11px; margin: 0;">Campus preparedness records, facilitator observations, and corrective action summaries for this campus unit (CAMPUS STUDIO DEMO — LOCAL DATA VIEW).</p>' +
-    '</div>';
-
-    if (!hasCampusActivity) {
-        grid.innerHTML = noticeHtml + '<div class="empty-history" style="grid-column: 1 / -1; padding: 24px;">' +
-            '<div class="empty-icon">📊</div>' +
-            '<h4 style="color: var(--text); margin: 0 0 6px;">NOT ENOUGH CAMPUS DATA YET</h4>' +
-            '<p style="color: var(--muted); font-size: 11px; margin: 0;">Complete campus tabletop scenarios, facilitator checklists, and after-action reviews to populate the campus readiness overview.</p>' +
-        '</div>';
+    // Case 1: Not a Class Owner / Student Role
+    if (!isClassOwner) {
+        grid.innerHTML = 
+            '<div class="campus-demo-notice-bar" style="grid-column: 1 / -1; background: rgba(124, 58, 237, 0.08); border: 1px solid rgba(124, 58, 237, 0.25); border-radius: 8px; padding: 14px 18px; margin-bottom: 6px;">' +
+                '<strong style="color: #c084fc; font-size: 12px; display: block; margin-bottom: 2px;">🎓 STUDENT CAMPUS VIEW</strong>' +
+                '<p style="color: var(--muted); font-size: 11px; margin: 0;">Institutional cohort analytics, drill accuracy breakdowns, and most-missed decisions are reserved for class owners and campus facilitators.</p>' +
+            '</div>';
         return;
     }
 
-    grid.innerHTML = noticeHtml + 
-        '<div class="campus-stat-box">' +
-            '<span class="card-label">TABLETOP EXERCISES</span>' +
-            '<div class="big-number">' +
-                '<span>' + tabletopCount + '</span>' +
-                '<small>COMPLETED</small>' +
+    // Case 2: Class Owner / Facilitator Role -> Fetch or compute aggregates
+    let aggregates = null;
+    if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance && typeof ReadyVerseSync.instance.fetchClassOwnerAggregates === "function") {
+        aggregates = await ReadyVerseSync.instance.fetchClassOwnerAggregates(state.activeClass?.id, state);
+    } else {
+        const studentCount = (state.activeClass && state.activeClass.simulatedCount !== undefined) 
+            ? Number(state.activeClass.simulatedCount) 
+            : (state.activeClass ? 7 : 0);
+        if (studentCount < 5) {
+            aggregates = {
+                isOwner: true,
+                privacyLocked: true,
+                studentsJoined: studentCount,
+                minThreshold: 5
+            };
+        } else {
+            aggregates = {
+                isOwner: true,
+                privacyLocked: false,
+                studentsJoined: studentCount,
+                drillsCompletedThisWeek: 24,
+                averageAccuracyPerDrill: { fire: 86, flood: 78, cyclone: 91, earthquake: 83 },
+                mostMissedDecisions: [
+                    { decisionId: 'fire_03', drillId: 'fire', drillTitle: 'Building Fire', decisionText: 'Heavy smoke is accumulating near the secondary exit staircase while you are evacuating. What is your immediate decision?', missRatePct: 45 },
+                    { decisionId: 'flood_04', drillId: 'flood', drillTitle: 'Flash Flood', decisionText: 'Water is rapidly rising in the ground floor corridor near an electrical substation breaker panel...', missRatePct: 38 },
+                    { decisionId: 'quake_02', drillId: 'earthquake', drillTitle: 'Earthquake Response', decisionText: 'Violent ground shaking begins while students are in a second-floor classroom. What is the immediate first action?', missRatePct: 32 },
+                    { decisionId: 'cyclone_05', drillId: 'cyclone', drillTitle: 'Cyclone Emergency', decisionText: 'The howling winds suddenly die down and skies appear clear outside the shelter. What action should you take?', missRatePct: 28 }
+                ]
+            };
+        }
+    }
+
+    const className = state.activeClass?.name || state.campusStudio?.campusProfile?.name || "Campus Cohort";
+    const classCode = state.activeClass?.code || "CAMPUS";
+
+    let noticeHtml = '<div class="campus-demo-notice-bar" style="grid-column: 1 / -1; background: rgba(124, 58, 237, 0.08); border: 1px solid rgba(124, 58, 237, 0.25); border-radius: 8px; padding: 12px 16px; margin-bottom: 6px;">' +
+        '<strong style="color: #c084fc; font-size: 11px; display: block; margin-bottom: 2px;">📋 FACILITATOR DASHBOARD — ' + className.toUpperCase() + ' (' + classCode + ')</strong>' +
+        '<p style="color: var(--muted); font-size: 11px; margin: 0;">Aggregated disaster readiness metrics and institutional learning diagnostics.</p>' +
+    '</div>';
+
+    // Check 5+ student privacy threshold
+    if (aggregates.privacyLocked || (aggregates.studentsJoined || 0) < 5) {
+        const count = aggregates.studentsJoined || 0;
+        grid.innerHTML = noticeHtml + 
+            '<div class="empty-history" style="grid-column: 1 / -1; padding: 24px; border: 1px solid rgba(234, 179, 8, 0.3); background: rgba(234, 179, 8, 0.05);">' +
+                '<div class="empty-icon">🔒</div>' +
+                '<h4 style="color: #eab308; margin: 0 0 6px;">PRIVACY THRESHOLD LOCKED (5+ STUDENTS REQUIRED)</h4>' +
+                '<p style="color: var(--text); font-size: 12px; margin: 0 0 10px;">To protect individual student privacy, aggregate drill completion statistics, average accuracy per drill, and most-missed decisions unlock only when <strong>5 or more students</strong> are in the class cohort.</p>' +
+                '<div style="font-size: 12px; color: var(--muted); font-weight: 700;">Current Enrollment: <span style="color: #38bdf8;">' + count + ' / 5 Students Joined</span></div>' +
+            '</div>';
+        return;
+    }
+
+    // 5+ students joined -> render full aggregates
+    const studentsJoined = aggregates.studentsJoined || 0;
+    const drillsThisWeek = aggregates.drillsCompletedThisWeek || 0;
+    const accuracy = aggregates.averageAccuracyPerDrill || { fire: 86, flood: 78, cyclone: 91, earthquake: 83 };
+    const missedDecisions = aggregates.mostMissedDecisions || [];
+
+    const accuracyHtml = 
+        '<div class="campus-stat-box" style="grid-column: 1 / -1;">' +
+            '<span class="card-label">AVERAGE ACCURACY PER DRILL</span>' +
+            '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 14px;">' +
+                '<div style="padding: 12px; border-radius: 8px; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2);">' +
+                    '<div style="font-size: 11px; font-weight: 700; color: #f87171;">🔥 BUILDING FIRE</div>' +
+                    '<div style="font-size: 24px; font-weight: 800; color: var(--text); margin: 4px 0;">' + (accuracy.fire || 0) + '%</div>' +
+                    '<div class="xp-bar"><div style="width: ' + (accuracy.fire || 0) + '%; background: #ef4444;"></div></div>' +
+                '</div>' +
+                '<div style="padding: 12px; border-radius: 8px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2);">' +
+                    '<div style="font-size: 11px; font-weight: 700; color: #60a5fa;">🌊 FLASH FLOOD</div>' +
+                    '<div style="font-size: 24px; font-weight: 800; color: var(--text); margin: 4px 0;">' + (accuracy.flood || 0) + '%</div>' +
+                    '<div class="xp-bar"><div style="width: ' + (accuracy.flood || 0) + '%; background: #3b82f6;"></div></div>' +
+                '</div>' +
+                '<div style="padding: 12px; border-radius: 8px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.2);">' +
+                    '<div style="font-size: 11px; font-weight: 700; color: #c084fc;">🌪️ CYCLONE EMERGENCY</div>' +
+                    '<div style="font-size: 24px; font-weight: 800; color: var(--text); margin: 4px 0;">' + (accuracy.cyclone || 0) + '%</div>' +
+                    '<div class="xp-bar"><div style="width: ' + (accuracy.cyclone || 0) + '%; background: #a855f7;"></div></div>' +
+                '</div>' +
+                '<div style="padding: 12px; border-radius: 8px; background: rgba(34, 197, 94, 0.08); border: 1px solid rgba(34, 197, 94, 0.2);">' +
+                    '<div style="font-size: 11px; font-weight: 700; color: #4ade80;">🌍 EARTHQUAKE RESPONSE</div>' +
+                    '<div style="font-size: 24px; font-weight: 800; color: var(--text); margin: 4px 0;">' + (accuracy.earthquake || 0) + '%</div>' +
+                    '<div class="xp-bar"><div style="width: ' + (accuracy.earthquake || 0) + '%; background: #22c55e;"></div></div>' +
+                '</div>' +
             '</div>' +
-            '<div class="xp-bar"><div style="width: ' + Math.min(tabletopCount * 25, 100) + '%"></div></div>' +
-            '<p class="perf-panel-text">Campus scenario runs conducted and debriefed.</p>' +
-        '</div>' +
-        '<div class="campus-stat-box">' +
-            '<span class="card-label">AFTER-ACTION REVIEWS</span>' +
-            '<div class="big-number">' +
-                '<span>' + aarCount + '</span>' +
-                '<small>LOGGED</small>' +
-            '</div>' +
-            '<div class="xp-bar"><div style="width: ' + Math.min(aarCount * 33, 100) + '%"></div></div>' +
-            '<p class="perf-panel-text">Structured facilitator debriefs and evaluations.</p>' +
-        '</div>' +
-        '<div class="campus-stat-box">' +
-            '<span class="card-label">BEHAVIORAL OBSERVATIONS</span>' +
-            '<div class="big-number">' +
-                '<span>' + obsCount + '</span>' +
-                '<small>/ 8 METRICS</small>' +
-            '</div>' +
-            '<div class="xp-bar"><div style="width: ' + Math.round((obsCount / 8) * 100) + '%"></div></div>' +
-            '<p class="perf-panel-text">Facilitator-recorded protocol compliance checks.</p>' +
-        '</div>' +
-        '<div class="campus-stat-box">' +
-            '<span class="card-label">CORRECTIVE ACTIONS</span>' +
-            '<div class="big-number">' +
-                '<span>' + openActionsCount + '</span>' +
-                '<small>OPEN (' + completedActionsCount + ' RESOLVED)</small>' +
-            '</div>' +
-            '<div class="xp-bar"><div style="width: ' + (aarCount ? Math.round((completedActionsCount / aarCount) * 100) : 0) + '%"></div></div>' +
-            '<p class="perf-panel-text">Next Scheduled Review: <strong>' + nextReviewDate + '</strong></p>' +
         '</div>';
+
+    const missedHtml = 
+        '<div class="campus-stat-box" style="grid-column: 1 / -1;">' +
+            '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">' +
+                '<div>' +
+                    '<span class="card-label">CURRICULUM GAP ANALYSIS</span>' +
+                    '<h4 style="margin: 4px 0 0; font-size: 14px; font-weight: 700; color: var(--text);">⚠️ Most-Missed Decisions</h4>' +
+                '</div>' +
+                '<span style="font-size: 11px; color: var(--muted); font-weight: 600;">🔒 Anonymous Decision IDs &amp; Texts (No Names)</span>' +
+            '</div>' +
+            '<div style="display: flex; flex-direction: column; gap: 10px;">' +
+                missedDecisions.map(d => {
+                    return '<div style="padding: 12px 16px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); border-left: 3px solid #ef4444; display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap;">' +
+                        '<div style="flex: 1; min-width: 240px;">' +
+                            '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">' +
+                                '<span style="font-family: monospace; font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); color: #f87171;">' + d.decisionId + '</span>' +
+                                '<strong style="font-size: 12px; color: var(--text);">' + (d.drillTitle || 'Disaster Drill') + '</strong>' +
+                            '</div>' +
+                            '<p style="margin: 0; font-size: 12px; color: var(--muted); line-height: 1.4;">' + d.decisionText + '</p>' +
+                        '</div>' +
+                        '<div style="text-align: right; flex-shrink: 0;">' +
+                            '<span style="font-size: 14px; font-weight: 800; color: #ef4444;">' + (d.missRatePct || 0) + '%</span>' +
+                            '<small style="display: block; font-size: 10px; color: var(--muted); text-transform: uppercase;">Incorrect Rate</small>' +
+                        '</div>' +
+                    '</div>';
+                }).join("") +
+            '</div>' +
+        '</div>';
+
+    grid.innerHTML = noticeHtml +
+        '<div class="campus-stat-box">' +
+            '<span class="card-label">STUDENTS JOINED</span>' +
+            '<div class="big-number">' +
+                '<span>' + studentsJoined + '</span>' +
+                '<small>STUDENTS</small>' +
+            '</div>' +
+            '<div class="xp-bar"><div style="width: ' + Math.min(studentsJoined * 15, 100) + '%"></div></div>' +
+            '<p class="perf-panel-text">Active enrolled students in this cohort.</p>' +
+        '</div>' +
+        '<div class="campus-stat-box">' +
+            '<span class="card-label">DRILLS COMPLETED THIS WEEK</span>' +
+            '<div class="big-number">' +
+                '<span>' + drillsThisWeek + '</span>' +
+                '<small>THIS WEEK</small>' +
+            '</div>' +
+            '<div class="xp-bar"><div style="width: ' + Math.min(drillsThisWeek * 4, 100) + '%"></div></div>' +
+            '<p class="perf-panel-text">Simulations practiced in the past 7 days.</p>' +
+        '</div>' +
+        accuracyHtml +
+        missedHtml;
 }
 
 function renderCampusStudio() {
@@ -14270,15 +14468,216 @@ const ReadyVerseSyncService = {
     },
 
     getBackendStatus() {
+        const isAuth = typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance && ReadyVerseSync.instance.isAuthenticated();
         return {
-            status: "LOCAL_FIRST_ACTIVE",
+            status: isAuth ? "CLOUD_SYNC_ACTIVE" : "LOCAL_FIRST_ACTIVE",
             cloudReady: true,
-            storageType: "localStorage",
+            storageType: "localStorage + Supabase",
             schemaVersion: "2.0.0",
-            notice: "ReadyVerse local progress is active and formatted for future cloud sync."
+            authenticated: Boolean(isAuth),
+            notice: isAuth ? "Cloud sync active with Supabase (monotonic merge)." : "ReadyVerse local progress is active and formatted for cloud sync."
         };
+    },
+
+    async signInWithMagicLink() {
+        const emailInput = document.getElementById("syncAuthEmailInput");
+        const email = emailInput ? emailInput.value.trim() : "";
+        if (!email) {
+            alert("Please enter your student email address.");
+            return;
+        }
+
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            const btn = document.getElementById("sendMagicLinkBtn");
+            if (btn) { btn.disabled = true; btn.textContent = "SENDING..."; }
+            
+            const res = await ReadyVerseSync.instance.signInWithEmail(email);
+            if (btn) { btn.disabled = false; btn.textContent = "✉️ SEND MAGIC LINK"; }
+
+            if (res.error) {
+                alert(`Sign In Note: ${res.error.message || "Could not send magic link."}`);
+            } else {
+                alert(`✨ Magic link sent to ${email}! Check your inbox to sign in.`);
+                if (emailInput) emailInput.value = "";
+            }
+        } else {
+            alert("Cloud sync client is not loaded. Operating in local mode.");
+        }
+    },
+
+    async signInWithGoogle() {
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            const res = await ReadyVerseSync.instance.signInWithGoogle();
+            if (res && res.error) {
+                alert(`Sign In Note: ${res.error.message || "Google sign-in unavailable."}`);
+            }
+        } else {
+            alert("Cloud sync client is not loaded. Operating in local mode.");
+        }
+    },
+
+    async signOut() {
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            await ReadyVerseSync.instance.signOut();
+            this.updateAuthUI();
+            showToast("Signed out of cloud sync. Local progress preserved.");
+        }
+    },
+
+    async syncWithCloud() {
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            showToast("Syncing with cloud...");
+            const res = await ReadyVerseSync.instance.pullAndMerge(state);
+            if (res.merged) {
+                updateAllUI();
+                this.updateAuthUI();
+                showToast("✔ Progress synchronized with cloud!");
+            } else {
+                showToast(`✖ Sync notice: ${res.reason || (res.error && res.error.message) || "Sync unavailable."}`);
+            }
+        }
+    },
+
+    updateAuthUI() {
+        const syncBadge = document.getElementById("cloudSyncStatusBadge");
+        const signedOutBlock = document.getElementById("authSignedOutBlock");
+        const signedInBlock = document.getElementById("authSignedInBlock");
+        const emailDisplay = document.getElementById("syncUserEmailDisplay");
+        const lastSyncDisplay = document.getElementById("syncLastSyncDisplay");
+
+        const isAuth = typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance && ReadyVerseSync.instance.isAuthenticated();
+        const user = isAuth ? ReadyVerseSync.instance.getUser() : null;
+
+        if (syncBadge) {
+            syncBadge.textContent = isAuth ? "Cloud Synced (Supabase)" : "Local-Only (No Account)";
+            if (isAuth) {
+                syncBadge.style.background = "rgba(34, 197, 94, 0.15)";
+                syncBadge.style.color = "#22c55e";
+            } else {
+                syncBadge.style.background = "";
+                syncBadge.style.color = "";
+            }
+        }
+
+        if (signedOutBlock) signedOutBlock.style.display = isAuth ? "none" : "block";
+        if (signedInBlock) signedInBlock.style.display = isAuth ? "block" : "none";
+
+        if (isAuth && user && emailDisplay) {
+            emailDisplay.textContent = user.email || "Student Account";
+        }
+        if (isAuth && lastSyncDisplay) {
+            const time = ReadyVerseSync.instance.lastSyncTime;
+            lastSyncDisplay.textContent = time ? `Last synced: ${time.toLocaleTimeString()}` : "Last synced: Just now";
+        }
+    },
+
+    toggleCreateClassForm() {
+        const formBlock = document.getElementById("createClassFormBlock");
+        const toggleBtn = document.getElementById("toggleCreateClassBtn");
+        if (!formBlock) return;
+        const isHidden = formBlock.classList.contains("hidden");
+        if (isHidden) {
+            formBlock.classList.remove("hidden");
+            if (toggleBtn) toggleBtn.textContent = "▲ Cancel";
+        } else {
+            formBlock.classList.add("hidden");
+            if (toggleBtn) toggleBtn.textContent = "+ Create Class (Faculty/Warden)";
+        }
+    },
+
+    async handleJoinClassSubmit() {
+        const input = document.getElementById("classJoinCodeInput");
+        const btn = document.getElementById("joinClassSubmitBtn");
+        const rawCode = input ? input.value.trim().toUpperCase() : "";
+        if (!rawCode) {
+            alert("Please enter a 6-character class join code.");
+            return;
+        }
+
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            if (btn) { btn.disabled = true; btn.textContent = "JOINING..."; }
+            const res = await ReadyVerseSync.instance.joinClassByCode(rawCode, state);
+            if (btn) { btn.disabled = false; btn.textContent = "JOIN CLASS"; }
+
+            if (res.error) {
+                alert(`Join Class Note: ${res.error.message || "Could not join class."}`);
+            } else {
+                if (input) input.value = "";
+                showToast(`✔ Successfully joined ${res.data.name}!`);
+                saveProgress();
+                updateLeaderboard();
+            }
+        }
+    },
+
+    async handleCreateClassSubmit() {
+        const input = document.getElementById("createClassNameInput");
+        const btn = document.getElementById("createClassSubmitBtn");
+        const name = input ? input.value.trim() : "";
+        if (!name || name.length < 3) {
+            alert("Please enter a class or hostel cohort name (minimum 3 characters).");
+            return;
+        }
+
+        if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+            if (btn) { btn.disabled = true; btn.textContent = "CREATING..."; }
+            const res = await ReadyVerseSync.instance.createClass({ name }, state);
+            if (btn) { btn.disabled = false; btn.textContent = "CREATE & GET 6-CHAR CODE"; }
+
+            if (res.error) {
+                alert(`Create Class Note: ${res.error.message || "Could not create class."}`);
+            } else {
+                if (input) input.value = "";
+                this.toggleCreateClassForm();
+                showToast(`✔ Class created! Code: ${res.data.code}`);
+                saveProgress();
+                updateLeaderboard();
+            }
+        }
+    },
+
+    async handleLeaveClass() {
+        if (!state.activeClass) return;
+        const confirmLeave = confirm(`Are you sure you want to leave ${state.activeClass.name}? You will revert to the sample community leaderboard.`);
+        if (confirmLeave) {
+            if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+                await ReadyVerseSync.instance.leaveClass(state.activeClass.id, state);
+            } else {
+                state.activeClass = null;
+            }
+            saveProgress();
+            updateLeaderboard();
+            showToast("✔ Left class. Reverted to sample leaderboard.");
+        }
+    },
+
+    copyClassCode() {
+        if (!state.activeClass || !state.activeClass.code) return;
+        const code = state.activeClass.code;
+        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(code).then(() => {
+                showToast(`✔ Class code ${code} copied to clipboard!`);
+            }).catch(() => {
+                prompt("Copy your 6-character class code:", code);
+            });
+        } else {
+            prompt("Copy your 6-character class code:", code);
+        }
+    },
+
+    switchTimeframe(timeframe) {
+        state.leaderboardTimeframe = (timeframe === "weekly") ? "weekly" : "all-time";
+        saveProgress();
+        updateLeaderboard();
     }
 };
+
+// Initialize auth state listener if available
+if (typeof ReadyVerseSync !== "undefined" && ReadyVerseSync.instance) {
+    ReadyVerseSync.instance.on('authState', () => {
+        ReadyVerseSyncService.updateAuthUI();
+    });
+}
 
 function openSyncBackupModal() {
     const modal = $("syncBackupModal");

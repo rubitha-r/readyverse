@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+
+# ReadyVerse - Static Review Page & Sitemaps for AI & Crawlers
+Allow: /review.html
+Allow: /manifest.json
+Allow: /sw.js
+Allow: /docs/
+
+Sitemap: SITE_URL_TO_BE_ADDED/sitemap.xml

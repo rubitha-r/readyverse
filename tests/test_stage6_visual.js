@@ -76,9 +76,9 @@ runTest('Check 6: Copy cleanup eliminates simulation mission, trainee greetings,
     assert(!html.includes('begin your first simulation mission today'), 'Landing CTA must not say begin your first simulation mission');
     assert(html.includes('start your first drill today'), 'Landing CTA must say start your first drill today');
     assert(!html.includes('100%') || !html.includes('CAMPUS<br>READINESS'), 'Landing stats must not show 100% CAMPUS READINESS');
-    assert(html.includes('4 DRILLS ·<br>6 LESSONS') || html.includes('4 drills · 6 lessons'), 'Landing stats must show 4 drills · 6 lessons');
+    assert(html.includes('DISASTER<br>DRILLS') && html.includes('LEARNING<br>MODULES') && html.includes('SAFETY ACTIONS'), 'Landing stats must show 4 drills, 6 lessons, 40 actions');
     assert(!html.includes('ID: RV-TRAINEE'), 'Profile ID badge must not say RV-TRAINEE');
-    assert(html.includes('ID: RV-STUDENT'), 'Profile ID badge must say ID: RV-STUDENT');
+    assert(!html.includes('ID: RV-STUDENT'), 'Profile ID badge must not say ID: RV-STUDENT');
 });
 
 // CHECK 7: Solid purple hero headline

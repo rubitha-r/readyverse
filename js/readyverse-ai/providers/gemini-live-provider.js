@@ -142,7 +142,7 @@
 
                 let hasHandledError = false;
                 this.ws.onerror = (err) => {
-                    console.error('[ReadyVerse AI / Gemini] WebSocket error:', err);
+                    console.warn('[ReadyVerse AI / Gemini] WebSocket error / unavailable:', err);
                     if (!hasHandledError) {
                         hasHandledError = true;
                         this.emitState('ERROR');

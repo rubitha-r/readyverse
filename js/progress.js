@@ -224,6 +224,8 @@
 
             lastResult: null,
 
+            _lastCelebratedLevel: 1,
+
             responderProfile: {
                 name: "Student",
                 titleId: "trainee",
@@ -244,7 +246,10 @@
                 selectedScenarioId: "campus_flood",
                 tabletopAnswers: [],
                 aarRecords: []
-            }
+            },
+
+            activeClass: null,
+            leaderboardTimeframe: "all-time"
         };
     }
 
@@ -310,12 +315,14 @@
             performanceHistory: st.performanceHistory || [],
             lastResult: st.lastResult || null,
             responderProfile: st.responderProfile || {},
-            campusStudio: st.campusStudio || {}
+            campusStudio: st.campusStudio || {},
+            activeClass: st.activeClass || null,
+            leaderboardTimeframe: st.leaderboardTimeframe || "all-time"
         };
     }
 
     function saveState(st) {
-        if (typeof localStorage === 'undefined') return;
+        if (typeof localStorage === 'undefined' || typeof localStorage.setItem !== 'function') return;
         try {
             const payload = serializeState(st);
             localStorage.setItem(STORAGE_KEY_V2, JSON.stringify(payload));
@@ -326,7 +333,7 @@
 
     function loadState(targetState) {
         const dest = targetState || createDefaultState();
-        if (typeof localStorage === 'undefined') return dest;
+        if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return dest;
 
         try {
             const rawV2 = localStorage.getItem(STORAGE_KEY_V2);
@@ -410,9 +417,14 @@
 
         dest.responderProfile = (data.responderProfile && typeof data.responderProfile === 'object') ? data.responderProfile : dest.responderProfile;
         dest.campusStudio = (data.campusStudio && typeof data.campusStudio === 'object') ? data.campusStudio : dest.campusStudio;
+        dest.activeClass = (data.activeClass && typeof data.activeClass === 'object') ? data.activeClass : null;
+        dest.leaderboardTimeframe = (typeof data.leaderboardTimeframe === 'string' && data.leaderboardTimeframe) ? data.leaderboardTimeframe : "all-time";
 
         // Recalculate and update readiness
         dest.readiness = calculateReadiness(dest).totalReadiness;
+
+        // Synchronize celebrated level to current loaded level so startup does not trigger false level-up celebration
+        dest._lastCelebratedLevel = calculateLevel(dest.totalXP).level;
     }
 
     /**
@@ -423,6 +435,7 @@
         const preservedPrepProfile = Object.assign({}, targetState.prepProfile);
         const preservedResponderProfile = Object.assign({}, targetState.responderProfile);
         const preservedCampusStudio = Object.assign({}, targetState.campusStudio);
+        const preservedActiveClass = targetState.activeClass ? Object.assign({}, targetState.activeClass) : null;
 
         const defaults = createDefaultState();
         Object.assign(targetState, defaults);
@@ -430,6 +443,7 @@
         targetState.prepProfile = preservedPrepProfile;
         targetState.responderProfile = preservedResponderProfile;
         targetState.campusStudio = preservedCampusStudio;
+        targetState.activeClass = preservedActiveClass;
 
         saveState(targetState);
     }
@@ -477,6 +491,123 @@
         };
     }
 
+    /**
+     * Prepares sync payload by stripping sensitive local-only fields
+     * (docs/BACKEND_DESIGN.md Section 4)
+     */
+    function prepareSyncPayload(localState) {
+        if (!localState) return null;
+        const serialized = serializeState(localState);
+        
+        return {
+            total_xp: serialized.totalXP,
+            level: calculateLevel(serialized.totalXP).level,
+            title: calculateLevel(serialized.totalXP).title,
+            readiness_score: serialized.readiness,
+            daily_streak: serialized.dailyStreak,
+            longest_streak: serialized.longestStreak,
+            completed_missions: Array.from(serialized.completedMissionIds || []),
+            mission_best_scores: Object.assign({}, serialized.missionBestScores || {}),
+            completed_learn_ids: Array.from(serialized.completedLearnIds || []),
+            completed_prep_item_ids: Array.from(serialized.completedPrepItemIds || []),
+            unlocked_achievements: Array.from(serialized.unlockedAchievements || []),
+            unlocked_capabilities: Array.from(serialized.unlockedCapabilities || []),
+            last_active_date: serialized.lastActivityDate,
+            schema_version: 2
+        };
+    }
+
+    /**
+     * Deterministic, monotonic conflict resolution merge
+     * (docs/BACKEND_DESIGN.md Section 5.1)
+     */
+    function mergeProgress(localState, cloudSnapshot) {
+        const dest = localState || createDefaultState();
+        if (!cloudSnapshot || typeof cloudSnapshot !== 'object') return dest;
+
+        // 1. Total XP (strictly monotonic max)
+        const cloudXP = Number(cloudSnapshot.total_xp ?? cloudSnapshot.totalXP ?? 0) || 0;
+        const localXP = Number(dest.totalXP || 0);
+        dest.totalXP = Math.max(localXP, cloudXP);
+
+        // 2. Completed Drills (Set Union)
+        const cloudMissions = Array.isArray(cloudSnapshot.completed_missions) 
+            ? cloudSnapshot.completed_missions 
+            : (Array.isArray(cloudSnapshot.completedMissionIds) ? cloudSnapshot.completedMissionIds : []);
+        const localMissions = Array.from(dest.completedMissionIds || []);
+        const mergedMissions = new Set([...localMissions, ...cloudMissions]);
+        dest.completedMissionIds = mergedMissions;
+        dest.completedMissions = mergedMissions.size;
+
+        // 3. Drill Best Scores (Max per drill)
+        const cloudScores = cloudSnapshot.mission_best_scores || cloudSnapshot.missionBestScores || {};
+        const localScores = dest.missionBestScores || {};
+        const mergedScores = Object.assign({}, localScores);
+        const mergedGrades = Object.assign({}, dest.missionBestGrades || {});
+        ['fire', 'flood', 'cyclone', 'earthquake'].forEach(k => {
+            const sLocal = Number(localScores[k] || 0);
+            const sCloud = Number(cloudScores[k] || 0);
+            const best = Math.max(sLocal, sCloud);
+            if (best > 0 || dest.completedMissionIds.has(k)) {
+                mergedScores[k] = best;
+                if (best >= 95) mergedGrades[k] = 'A+';
+                else if (best >= 80) mergedGrades[k] = 'A';
+                else if (best >= 65) mergedGrades[k] = 'B';
+                else mergedGrades[k] = 'C';
+            }
+        });
+        dest.missionBestScores = mergedScores;
+        dest.missionBestGrades = mergedGrades;
+
+        // 4. Completed Learn Modules (Set Union)
+        const cloudLearn = Array.isArray(cloudSnapshot.completed_learn_ids) 
+            ? cloudSnapshot.completed_learn_ids 
+            : (Array.isArray(cloudSnapshot.completedLearnIds) ? cloudSnapshot.completedLearnIds : []);
+        const localLearn = Array.from(dest.completedLearnIds || []);
+        dest.completedLearnIds = new Set([...localLearn, ...cloudLearn]);
+
+        // 5. Completed Preparedness Actions (Set Union)
+        const cloudPrep = Array.isArray(cloudSnapshot.completed_prep_item_ids) 
+            ? cloudSnapshot.completed_prep_item_ids 
+            : (Array.isArray(cloudSnapshot.completedPrepItemIds) ? cloudSnapshot.completedPrepItemIds : []);
+        const localPrep = Array.from(dest.completedPrepItemIds || []);
+        dest.completedPrepItemIds = new Set([...localPrep, ...cloudPrep]);
+
+        // 6. Achievements & Capabilities (Set Union)
+        const cloudAch = Array.isArray(cloudSnapshot.unlocked_achievements) 
+            ? cloudSnapshot.unlocked_achievements 
+            : (Array.isArray(cloudSnapshot.unlockedAchievements) ? cloudSnapshot.unlockedAchievements : []);
+        const localAch = Array.from(dest.unlockedAchievements || []);
+        dest.unlockedAchievements = new Set([...localAch, ...cloudAch]);
+
+        const cloudCap = Array.isArray(cloudSnapshot.unlocked_capabilities) 
+            ? cloudSnapshot.unlocked_capabilities 
+            : (Array.isArray(cloudSnapshot.unlockedCapabilities) ? cloudSnapshot.unlockedCapabilities : []);
+        const localCap = Array.from(dest.unlockedCapabilities || []);
+        dest.unlockedCapabilities = new Set([...localCap, ...cloudCap]);
+
+        // 7. Daily & Longest Streak (Max)
+        const cloudDailyStreak = Number(cloudSnapshot.daily_streak ?? cloudSnapshot.dailyStreak ?? 0) || 0;
+        const localDailyStreak = Number(dest.dailyStreak || 0);
+        dest.dailyStreak = Math.max(localDailyStreak, cloudDailyStreak);
+
+        const cloudLongestStreak = Number(cloudSnapshot.longest_streak ?? cloudSnapshot.longestStreak ?? 0) || 0;
+        const localLongestStreak = Number(dest.longestStreak || 0);
+        dest.longestStreak = Math.max(localLongestStreak, cloudLongestStreak, dest.dailyStreak);
+
+        const cloudLastDate = cloudSnapshot.last_active_date || cloudSnapshot.lastActivityDate;
+        if (cloudLastDate && (!dest.lastActivityDate || cloudLastDate > dest.lastActivityDate)) {
+            dest.lastActivityDate = cloudLastDate;
+        }
+
+        // 8. Recompute Level and Readiness deterministically
+        const levelData = calculateLevel(dest.totalXP);
+        dest._lastCelebratedLevel = levelData.level;
+        dest.readiness = calculateReadiness(dest).totalReadiness;
+
+        return dest;
+    }
+
     return {
         STORAGE_KEY: STORAGE_KEY_V2,
         STORAGE_KEY_V1: STORAGE_KEY_V1,
@@ -492,6 +623,8 @@
         resetProgress,
         exportBackup,
         importBackup,
+        prepareSyncPayload,
+        mergeProgress,
         getLocalDateString,
         getCalendarDayDiff
     };

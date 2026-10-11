@@ -27,13 +27,15 @@
 
     const OFFLINE_LIMITATIONS = {
         disabled: [
+            "AI coach",
+            "Voice recognition",
+            "Cloud sync",
             "Live alerts",
             "Weather",
             "Government orders",
             "Live hazard data",
             "Dispatch",
-            "Tracking",
-            "AI coach"
+            "Tracking"
         ],
         enabled: [
             "All 4 Disaster Drills (Fire, Flood, Cyclone, Earthquake)",

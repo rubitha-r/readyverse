@@ -7,4 +7,4 @@ Allow: /manifest.json
 Allow: /sw.js
 Allow: /docs/
 
-Sitemap: https://readyverse.netlify.app/sitemap.xml
+Sitemap: SITE_URL_TO_BE_ADDED/sitemap.xml

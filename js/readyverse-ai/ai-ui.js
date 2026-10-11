@@ -22,6 +22,12 @@
             this.transport = new AITransportClass();
             this.isOpen = false;
             this.isVoiceActive = false;
+            this.isListening = false;
+            this.speechLang = 'en-IN';
+            this.isTtsEnabled = false;
+            try {
+                this.isTtsEnabled = localStorage.getItem('readyverse_ai_tts_enabled') === 'true';
+            } catch (_) {}
             this.dom = {};
             this.init();
         }
@@ -32,7 +38,6 @@
             this.createDOM();
             this.bindEvents();
             this.setupTransportListeners();
-            this.checkHealth();
             this.scheduleCoachmark();
         }
 
@@ -81,7 +86,13 @@
                                 </div>
                             </div>
                         </div>
-                        <button class="rv-ai-close-btn" id="rvAiCloseBtn" title="Close Companion" aria-label="Close ReadyVerse AI">&times;</button>
+                        <div class="rv-ai-header-actions">
+                            <button class="rv-ai-tts-toggle-btn" id="rvAiTtsToggleBtn" title="Toggle AI voice replies read-aloud" aria-label="Toggle voice output" aria-pressed="false">
+                                <span class="tts-icon">🔇</span>
+                                <span class="tts-label">Voice: OFF</span>
+                            </button>
+                            <button class="rv-ai-close-btn" id="rvAiCloseBtn" title="Close Companion" aria-label="Close ReadyVerse AI">&times;</button>
+                        </div>
                     </div>
 
                     <!-- Error Alert Banner -->
@@ -101,6 +112,7 @@
                         </div>
                         <div class="rv-ai-mode-tags">
                             <span class="rv-ai-tag active">EN / தமிழ் / Tanglish</span>
+                            <button type="button" class="rv-ai-tag rv-ai-lang-pill" id="rvAiLangPill" title="Tap to toggle speech recognition language (en-IN / ta-IN)" aria-label="Toggle voice language">Mic: en-IN</button>
                             <span class="rv-ai-tag" id="rvAiActiveContextTag">Command Center</span>
                         </div>
                     </div>
@@ -120,7 +132,7 @@
 
                     <!-- Controls & Text Fallback -->
                     <div class="rv-ai-footer">
-                        <button class="rv-ai-mic-btn" id="rvAiMicBtn" title="Start / Stop Voice Interaction" aria-label="Talk to ReadyVerse AI">
+                        <button class="rv-ai-mic-btn" id="rvAiMicBtn" title="Start voice input" aria-label="Talk to ReadyVerse AI">
                             🎙️
                         </button>
                         <div class="rv-ai-input-wrap">
@@ -131,7 +143,7 @@
 
                     <!-- PROMPT 7 & 8: AI COACH DISCLAIMER & LIMITATIONS -->
                     <div class="rv-ai-disclaimer" id="rvAiDisclaimer">
-                        ⚠️ <strong>Beta AI Coach:</strong> Voice recognition and the AI coach need internet. Spoken audio depends on voices installed on the phone. Answers strictly grounded in ReadyVerse disaster lessons. In an emergency, call <strong>112</strong> immediately.
+                        ⚠️ <strong>Beta AI Coach:</strong> Voice recognition and the AI coach need internet. Spoken audio depends on voices installed on the phone. Answers strictly grounded in ReadyVerse disaster lessons. Never invent steps or medical advice. In an emergency, call <strong>112</strong> immediately.
                     </div>
                 </div>
             `;
@@ -148,10 +160,15 @@
             this.dom.transcript = overlay.querySelector('#rvAiTranscript');
             this.dom.chipsWrap = overlay.querySelector('#rvAiChipsWrap');
             this.dom.micBtn = overlay.querySelector('#rvAiMicBtn');
+            this.dom.ttsToggleBtn = overlay.querySelector('#rvAiTtsToggleBtn');
+            this.dom.langPill = overlay.querySelector('#rvAiLangPill');
             this.dom.textInput = overlay.querySelector('#rvAiTextInput');
             this.dom.sendBtn = overlay.querySelector('#rvAiSendBtn');
             this.dom.closeBtn = overlay.querySelector('#rvAiCloseBtn');
             this.dom.window = overlay.querySelector('.rv-ai-window');
+
+            this.initSpeechRecognition();
+            this.updateTtsToggleUI();
         }
 
         bindEvents() {
@@ -165,8 +182,18 @@
                 }
             });
 
+            // Voice Output (SpeechSynthesis) Toggle
+            if (this.dom.ttsToggleBtn) {
+                this.dom.ttsToggleBtn.addEventListener('click', () => this.toggleTts());
+            }
+
+            // Voice Input Language Toggle (en-IN / ta-IN)
+            if (this.dom.langPill) {
+                this.dom.langPill.addEventListener('click', () => this.toggleSpeechLang());
+            }
+
             // Microphone Toggle
-            this.dom.micBtn.addEventListener('click', () => this.toggleVoice());
+            this.dom.micBtn.addEventListener('click', () => this.toggleVoiceInput());
 
             // Text Send
             this.dom.sendBtn.addEventListener('click', () => this.handleTextSubmit());
@@ -218,30 +245,6 @@
             });
         }
 
-        async checkHealth() {
-            if (typeof fetch === 'undefined') return;
-            try {
-                const res = await fetch('/api/health');
-                if (res.ok) {
-                    const health = await res.json();
-                    if (health.geminiConfigured) {
-                        this.transport.availability = 'CLOUD_PRIMARY';
-                        this.updateAvailabilityUI('CLOUD_PRIMARY');
-                    } else if (health.groqConfigured) {
-                        this.transport.availability = 'CLOUD_BACKUP';
-                        this.transport.activeProviderName = 'groq';
-                        this.transport.sessionMode = 'text';
-                        this.updateAvailabilityUI('CLOUD_BACKUP');
-                    } else if (!health.geminiConfigured && !health.groqConfigured && !health.openaiConfigured) {
-                        this.transport.availability = 'OFFLINE_READY';
-                        this.updateAvailabilityUI('OFFLINE_READY');
-                    }
-                }
-            } catch (e) {
-                // If /api/health is unreachable, do not display offline error prematurely.
-            }
-        }
-
         open() {
             this.isOpen = true;
             this.dismissCoachmark();
@@ -249,15 +252,20 @@
             this.dom.overlay.classList.add('active');
             this.updateContextualChips();
             this.clearError();
-            this.checkHealth();
             setTimeout(() => this.dom.textInput.focus(), 150);
         }
 
         close() {
             this.isOpen = false;
             this.dom.overlay.classList.remove('active');
+            if (this.isListening) {
+                this.stopVoiceInput();
+            }
             if (this.isVoiceActive) {
                 this.stopVoice();
+            }
+            if (typeof ReadyVerseSpeech !== 'undefined') {
+                ReadyVerseSpeech.stop();
             }
             this.dom.trigger.focus();
         }
@@ -322,10 +330,10 @@
 
         updateAvailabilityUI(availability) {
             if (availability === 'OFFLINE_READY') {
-                this.dom.statusText.textContent = 'Static / Offline Mode';
+                this.dom.statusText.textContent = 'Offline Ready Mode';
                 this.dom.statusDot.className = 'rv-ai-status-dot offline';
                 this.dom.errorBanner.style.display = 'flex';
-                this.dom.errorMessage.textContent = 'Offline Mode: AI chat is currently resting. Your crisis drills, progress tracking, and emergency guides are all working normally!';
+                this.dom.errorMessage.textContent = 'The AI friend is offline right now. Check the lessons or call 112.';
             } else if (availability === 'CLOUD_BACKUP') {
                 this.dom.errorBanner.style.display = 'none';
                 this.dom.statusText.textContent = 'Text Mode · Groq Backup';
@@ -337,34 +345,254 @@
             }
         }
 
-        async toggleVoice() {
-            if (this.isVoiceActive) {
-                this.stopVoice();
+        initSpeechRecognition() {
+            const SpeechRecClass = (typeof window !== 'undefined') ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+            if (!SpeechRecClass) {
+                if (this.dom.micBtn) {
+                    this.dom.micBtn.style.display = 'none';
+                    this.dom.micBtn.setAttribute('aria-hidden', 'true');
+                }
+                if (this.dom.langPill) {
+                    this.dom.langPill.style.display = 'none';
+                }
+                return;
+            }
+
+            if (this.dom.micBtn) {
+                this.dom.micBtn.style.display = '';
+                this.dom.micBtn.removeAttribute('aria-hidden');
+            }
+            if (this.dom.langPill) {
+                this.dom.langPill.style.display = '';
+            }
+            this.updateLangPillUI();
+        }
+
+        getSpeechLanguage() {
+            if (this.speechLang === 'ta-IN') return 'ta-IN';
+            if (this.speechLang === 'en-IN') return 'en-IN';
+            if (typeof state !== 'undefined' && (state.drillLanguage === 'ta' || state.language === 'ta')) return 'ta-IN';
+            if (typeof dailyDrillSession !== 'undefined' && dailyDrillSession.lang === 'ta') return 'ta-IN';
+            if (typeof document !== 'undefined' && document.documentElement.lang === 'ta') return 'ta-IN';
+            return 'en-IN';
+        }
+
+        toggleSpeechLang() {
+            const current = this.getSpeechLanguage();
+            this.speechLang = (current === 'ta-IN') ? 'en-IN' : 'ta-IN';
+            this.updateLangPillUI();
+            return this.speechLang;
+        }
+
+        updateLangPillUI() {
+            if (this.dom.langPill) {
+                const active = this.getSpeechLanguage();
+                this.dom.langPill.textContent = active === 'ta-IN' ? 'Mic: தமிழ் (ta-IN)' : 'Mic: EN (en-IN)';
+            }
+        }
+
+        toggleVoiceInput() {
+            if (this.isListening) {
+                this.stopVoiceInput();
             } else {
-                await this.startVoice();
+                this.startVoiceInput();
+            }
+        }
+
+        startVoiceInput() {
+            const SpeechRecClass = (typeof window !== 'undefined') ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+            if (!SpeechRecClass) {
+                this.showError('Speech recognition is not supported on this browser. Please chat via text.');
+                return;
+            }
+
+            // Stop any ongoing speech synthesis playback
+            if (typeof ReadyVerseSpeech !== 'undefined' && ReadyVerseSpeech.isSpeaking()) {
+                ReadyVerseSpeech.stop();
+            }
+
+            try {
+                if (this.recognition) {
+                    try { this.recognition.abort(); } catch (_) {}
+                    this.recognition = null;
+                }
+
+                this.recognition = new SpeechRecClass();
+                this.recognition.continuous = false;
+                this.recognition.interimResults = true;
+                const activeLang = this.getSpeechLanguage();
+                this.recognition.lang = activeLang;
+
+                this.recognition.onstart = () => {
+                    this.isListening = true;
+                    if (this.dom.micBtn) {
+                        this.dom.micBtn.classList.add('active', 'recording');
+                        this.dom.micBtn.innerHTML = '⏹️';
+                        this.dom.micBtn.setAttribute('aria-pressed', 'true');
+                        this.dom.micBtn.setAttribute('title', 'Stop listening');
+                    }
+                    if (this.dom.statusText) {
+                        this.dom.statusText.textContent = `Listening (${activeLang === 'ta-IN' ? 'தமிழ்' : 'English'})...`;
+                    }
+                    if (this.dom.statusDot) {
+                        this.dom.statusDot.className = 'rv-ai-status-dot listening';
+                    }
+                    if (this.dom.waveform) {
+                        this.dom.waveform.classList.add('listening');
+                    }
+                    this.clearError();
+                };
+
+                let finalTranscript = '';
+                this.recognition.onresult = (event) => {
+                    let interimTranscript = '';
+                    for (let i = event.resultIndex; i < event.results.length; ++i) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        } else {
+                            interimTranscript += event.results[i][0].transcript;
+                        }
+                    }
+
+                    const display = (finalTranscript || interimTranscript).trim();
+                    if (display && this.dom.textInput) {
+                        this.dom.textInput.value = display;
+                    }
+
+                    if (finalTranscript.trim()) {
+                        this.stopVoiceInput();
+                        this.handleTextSubmit();
+                    }
+                };
+
+                this.recognition.onerror = (event) => {
+                    this.stopVoiceInput();
+                    const err = event.error;
+                    if (err === 'not-allowed' || err === 'service-not-allowed') {
+                        this.showError('Microphone permission was denied. You can continue chatting using text.');
+                    } else if (err === 'no-speech') {
+                        this.showError('No speech was detected. Tap the mic to try again, or type below.');
+                    } else if (err === 'network') {
+                        this.showError('Speech recognition network error. Please check your connection or type below.');
+                    } else if (err === 'audio-capture') {
+                        this.showError('No microphone was detected on this device. You can chat using text.');
+                    } else if (err !== 'aborted') {
+                        this.showError(`Speech recognition issue (${err}). You can continue typing.`);
+                    }
+                };
+
+                this.recognition.onend = () => {
+                    this.stopVoiceInput();
+                };
+
+                this.recognition.start();
+            } catch (err) {
+                this.stopVoiceInput();
+                this.showError('Could not start speech recognition. You can continue typing in text.');
+            }
+        }
+
+        stopVoiceInput() {
+            this.isListening = false;
+            if (this.recognition) {
+                try { this.recognition.stop(); } catch (_) {}
+                this.recognition = null;
+            }
+            if (this.dom.micBtn) {
+                this.dom.micBtn.classList.remove('active', 'recording');
+                this.dom.micBtn.innerHTML = '🎙️';
+                this.dom.micBtn.setAttribute('aria-pressed', 'false');
+                this.dom.micBtn.setAttribute('title', 'Start voice input');
+            }
+            if (this.dom.waveform) {
+                this.dom.waveform.classList.remove('listening');
+            }
+            this.updateStateUI('DISCONNECTED', 'text');
+        }
+
+        toggleTts() {
+            this.isTtsEnabled = !this.isTtsEnabled;
+            try {
+                localStorage.setItem('readyverse_ai_tts_enabled', String(this.isTtsEnabled));
+            } catch (_) {}
+            this.updateTtsToggleUI();
+            if (!this.isTtsEnabled && typeof ReadyVerseSpeech !== 'undefined') {
+                ReadyVerseSpeech.stop();
+            }
+        }
+
+        updateTtsToggleUI() {
+            if (!this.dom.ttsToggleBtn) return;
+            const icon = this.dom.ttsToggleBtn.querySelector('.tts-icon');
+            const label = this.dom.ttsToggleBtn.querySelector('.tts-label');
+            if (this.isTtsEnabled) {
+                this.dom.ttsToggleBtn.classList.add('active');
+                this.dom.ttsToggleBtn.setAttribute('aria-pressed', 'true');
+                if (icon) icon.textContent = '🔊';
+                if (label) label.textContent = 'Voice: ON';
+            } else {
+                this.dom.ttsToggleBtn.classList.remove('active');
+                this.dom.ttsToggleBtn.setAttribute('aria-pressed', 'false');
+                if (icon) icon.textContent = '🔇';
+                if (label) label.textContent = 'Voice: OFF';
+            }
+        }
+
+        speakAssistantReply(text, language) {
+            const hasSpeech = (typeof ReadyVerseSpeech !== 'undefined' && ReadyVerseSpeech.isSupported()) ||
+                              (typeof window !== 'undefined' && 'speechSynthesis' in window);
+            if (!hasSpeech) {
+                this.showError('Speech synthesis is not supported on this browser. Reply is displayed in text above.');
+                return;
+            }
+
+            const lang = (language === 'tamil') ? 'ta' : 'en';
+            let hasVoice = false;
+            if (typeof ReadyVerseSpeech !== 'undefined') {
+                hasVoice = ReadyVerseSpeech.hasVoiceForLanguage(lang);
+            } else if (typeof window !== 'undefined' && window.speechSynthesis) {
+                const voices = window.speechSynthesis.getVoices() || [];
+                hasVoice = voices.some(v => v.lang && v.lang.toLowerCase().startsWith(lang));
+            }
+
+            if (!hasVoice) {
+                const langLabel = (lang === 'ta') ? 'Tamil' : 'English';
+                this.showError(`A suitable ${langLabel} voice is not available on this device. Reply is displayed in text above.`);
+                return;
+            }
+
+            if (typeof ReadyVerseSpeech !== 'undefined') {
+                ReadyVerseSpeech.speak({
+                    text: text,
+                    lang: lang,
+                    onStart: () => {
+                        if (this.dom.waveform) this.dom.waveform.classList.add('speaking');
+                    },
+                    onEnd: () => {
+                        if (this.dom.waveform) this.dom.waveform.classList.remove('speaking');
+                    },
+                    onError: () => {
+                        if (this.dom.waveform) this.dom.waveform.classList.remove('speaking');
+                        this.showError('Spoken audio playback encountered an issue. Reply is displayed in text above.');
+                    }
+                });
+            }
+        }
+
+        async toggleVoice() {
+            if (this.isListening) {
+                this.stopVoiceInput();
+            } else {
+                this.startVoiceInput();
             }
         }
 
         async startVoice() {
-            this.isVoiceActive = true;
-            this.dom.micBtn.classList.add('active');
-            this.dom.micBtn.innerHTML = '⏹️';
-            this.clearError();
-
-            const success = await this.transport.connectVoice();
-            if (!success) {
-                this.isVoiceActive = false;
-                this.dom.micBtn.classList.remove('active');
-                this.dom.micBtn.innerHTML = '🎙️';
-            }
+            this.startVoiceInput();
         }
 
         stopVoice() {
-            this.isVoiceActive = false;
-            this.dom.micBtn.classList.remove('active');
-            this.dom.micBtn.innerHTML = '🎙️';
-            this.transport.disconnect();
-            this.updateStateUI('DISCONNECTED', 'voice');
+            this.stopVoiceInput();
         }
 
         async handleTextSubmit() {
@@ -504,6 +732,11 @@
 
             this.dom.transcript.appendChild(wrap);
             this.scrollToBottom();
+
+            // Voice Output: Read assistant response aloud if Voice Output toggle is ON
+            if (this.isTtsEnabled && role === 'assistant' && !isSystemNotice && isFinal) {
+                this.speakAssistantReply(text, language);
+            }
         }
 
         updateContextualChips() {
@@ -567,6 +800,12 @@
                     break;
             }
 
+            // Mandatory E2 suggested chips: "What do I do in a fire?" and "Quiz me"
+            chips.unshift(
+                { label: 'What do I do in a fire?', text: 'What do I do in a fire?' },
+                { label: 'Quiz me', text: 'Quiz me' }
+            );
+
             this.dom.contextTag.textContent = contextLabel;
             this.dom.chipsWrap.innerHTML = '';
 
@@ -584,7 +823,7 @@
 
         showError(message) {
             this.dom.errorBanner.style.display = 'flex';
-            this.dom.errorMessage.textContent = message || 'An error occurred with ReadyVerse AI.';
+            this.dom.errorMessage.textContent = message || 'The AI friend is offline right now. Check the lessons or call 112.';
         }
 
         clearError() {

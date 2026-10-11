@@ -124,7 +124,7 @@ To enable the Gemini Live Realtime Voice assistant and Groq LPU text failover:
 
 1. **Clone the Repository & Install Dependencies**:
    ```bash
-   git clone https://github.com/your-username/readyverse.git
+   git clone SITE_URL_TO_BE_ADDED
    cd readyverse
    npm install
    ```

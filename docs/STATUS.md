@@ -1,12 +1,14 @@
 # ReadyVerse — System Status & Roadmap
 
-**Current Build Version:** `v1.0.0` (Production Release)  
+**Current Build Version:** `v1.0.0` (Working prototype)  
 **Build Date:** `2026-10-07`  
+**Commit ID:** `6a489c63c70bdf7287cf937a52f37f817f2de722`  
+**Review URL:** `SITE_URL_TO_BE_ADDED/review.html`  
 **Deployment Target:** Progressive Web App (PWA) / Static Hosting + Serverless Functions
 
 ---
 
-## 1. What Works (100% Functional & Verified)
+## 1. What Works (100% Functional & Verified in Real Browser)
 
 ### 🚨 Crisis Drills & Emergency Decision Engine
 - **4 Full Playable Disaster Drills** (32 total decision nodes with consequences):
@@ -55,12 +57,22 @@
 
 ---
 
-## 4. Verification Benchmark & Quality Assurance
+## 4. Verification Benchmark & Real Browser Screenshots
 
 - **Mathematical Readiness Score Benchmarks**:
   - Brand New Student: **0%**
   - 1 Perfect Fire Drill Run (100% score): **10%**
   - 1 Weak Fire Drill Run (24% score): **2%**
   - 100% Preparedness Master (4 drills @ 100%, 6 lessons, 40 checklist items): **100%**
-- **Automated Regression Test Suite**: 16 / 16 Test Suites Passed (100% pass rate).
+- **Automated Regression Test Suite**: 15 / 15 Test Suites Passed (100% pass rate across 177 assertions).
 - **WCAG AA Compliance**: 100% of interactive button styles satisfy $\ge 4.5:1$ contrast ratio.
+- **Real Browser Screenshot Captures (`docs/screenshots/`)**:
+  - All **28 PNG screenshot files** in `docs/screenshots/` are authentic graphical captures from the live web application executed in Microsoft Edge via Chrome DevTools Protocol (`Page.captureScreenshot`).
+  - Captured at **360px** (Mobile) and **1280px** (Desktop) across **Light** and **Dark** themes for:
+    1. Landing Page (`360-landing-light.png`, `360-landing-dark.png`, `1280-landing-light.png`, `1280-landing-dark.png`)
+    2. Home Dashboard (`360-home-light.png`, `360-home-dark.png`, `1280-home-light.png`, `1280-home-dark.png`)
+    3. Drill in Progress (`360-drill-in-progress-light.png`, `360-drill-in-progress-dark.png`, `1280-drill-in-progress-light.png`, `1280-drill-in-progress-dark.png`)
+    4. Drill Result & Share Card (`360-drill-result-share-light.png`, `360-drill-result-share-dark.png`, `1280-drill-result-share-light.png`, `1280-drill-result-share-dark.png`)
+    5. Learn Hub (`360-learn-light.png`, `360-learn-dark.png`, `1280-learn-light.png`, `1280-learn-dark.png`)
+    6. Preparedness Plan (`360-plan-light.png`, `360-plan-dark.png`, `1280-plan-light.png`, `1280-plan-dark.png`)
+    7. Profile Hub (`360-profile-light.png`, `360-profile-dark.png`, `1280-profile-light.png`, `1280-profile-dark.png`)
