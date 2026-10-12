@@ -324,7 +324,9 @@
         }
 
         clearChat() {
-            if (this.transport && typeof this.transport.clearHistory === 'function') {
+            if (this.transport && typeof this.transport.clearConversationHistory === 'function') {
+                this.transport.clearConversationHistory();
+            } else if (this.transport && typeof this.transport.clearHistory === 'function') {
                 this.transport.clearHistory();
             }
             this.dom.transcript.innerHTML = `
@@ -605,6 +607,23 @@
             }
         }
 
+        cleanTextForSpeech(text) {
+            if (!text || typeof text !== 'string') return '';
+            return text
+                // Remove Markdown links [text](url) -> text
+                .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+                // Remove URLs
+                .replace(/https?:\/\/\S+/gi, '')
+                // Remove bold/italics/code/headers/blockquotes/bullets markdown formatting
+                .replace(/[*_#`~>]/g, '')
+                .replace(/^[\s-–—*+•]+\s*/gm, '')
+                // Remove emojis, pictographs, and variation selectors
+                .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E0}-\u{1F1FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '')
+                // Normalize multiple spaces / line breaks
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
         speakAssistantReply(text, language) {
             const hasSpeech = (typeof ReadyVerseSpeech !== 'undefined' && ReadyVerseSpeech.isSupported()) ||
                               (typeof window !== 'undefined' && 'speechSynthesis' in window);
@@ -612,6 +631,9 @@
                 this.showError('Speech synthesis is not supported on this browser. Reply is displayed in text above.');
                 return;
             }
+
+            const cleanText = this.cleanTextForSpeech(text);
+            if (!cleanText) return;
 
             const lang = (language === 'tamil') ? 'ta' : 'en';
             let hasVoice = false;
@@ -630,7 +652,7 @@
 
             if (typeof ReadyVerseSpeech !== 'undefined') {
                 ReadyVerseSpeech.speak({
-                    text: text,
+                    text: cleanText,
                     lang: lang,
                     onStart: () => {
                         if (this.dom.waveform) this.dom.waveform.classList.add('speaking');

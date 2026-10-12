@@ -412,6 +412,22 @@
     }
 
     /**
+     * Extracts student's trusted first name. Rejects generic defaults ('Student', 'Trainee', etc.)
+     */
+    function getStudentFirstName(profile) {
+        if (!profile) {
+            const state = getState();
+            profile = state.prepProfile || state.responderProfile || {};
+        }
+        const candidate = (typeof profile === 'string') ? profile : (profile.name || profile.firstName || '');
+        if (!candidate || typeof candidate !== 'string') return '';
+        const trimmed = candidate.trim();
+        const untrusted = ['student', 'user', 'learner', 'trainee', 'responder', 'anonymous', 'ready trainee'];
+        if (untrusted.includes(trimmed.toLowerCase())) return '';
+        return trimmed.split(/\s+/)[0];
+    }
+
+    /**
      * Phase 5: Real Readiness Coach Context extractor
      * Reads LIVE state through ReadyVerseProgress API at send time (no cached copies).
      * Strictly numbers only — no personal or medical data.
@@ -492,7 +508,10 @@
             });
         }
 
+        const trustedStudentName = getStudentFirstName();
+
         return {
+            studentName: trustedStudentName || null,
             readiness: {
                 total: readinessResult.totalReadiness,
                 simulationScore: readinessResult.simulationScore,
@@ -505,6 +524,7 @@
                 }
             },
             player: {
+                studentName: trustedStudentName || null,
                 level: levelInfo.level,
                 levelTitle: levelInfo.title,
                 totalXP: totalXP,
@@ -666,6 +686,7 @@
         getVideoContext: getVideoContext,
         getCampusContext: getCampusContext,
         getReadyVerseContext: getReadyVerseContext,
-        getCoachContext: getCoachContext
+        getCoachContext: getCoachContext,
+        getStudentFirstName: getStudentFirstName
     };
 }));

@@ -123,7 +123,9 @@ const server = http.createServer(async (req, res) => {
         const coachHandler = require('./api/coach');
         if (pathname === '/api/coach-health' && req.method === 'GET') {
             return (async () => {
-                const healthRes = await coachHandler.handleCoachRequest({ health: true }, 'health-check');
+                const parsedUrl = url.parse(req.url, true);
+                const isDeep = Boolean(parsedUrl.query && (parsedUrl.query.deep === '1' || parsedUrl.query.deep === 'true'));
+                const healthRes = await coachHandler.handleCoachRequest({ health: true, deep: isDeep }, 'health-check');
                 res.statusCode = 200;
                 res.setHeader('Content-Type', 'application/json');
                 res.end(JSON.stringify(healthRes.body));

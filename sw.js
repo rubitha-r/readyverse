@@ -3,7 +3,7 @@
  * Provides robust offline PWA caching for App Shell, Lessons, Drills, and Data.
  */
 
-const CACHE_NAME = 'readyverse-3b6c110ea5';
+const CACHE_NAME = 'readyverse-3bc05055de';
 const STATIC_ASSETS = [
     './',
     './index.html',
@@ -90,9 +90,10 @@ self.addEventListener('fetch', (event) => {
             fetch(request).catch(() => {
                 return new Response(
                     JSON.stringify({
-                        success: true,
-                        provider: 'offline-service-worker',
+                        ok: false,
+                        reply: "I'm offline right now. Live AI coaching requires an active internet connection. Please check your offline ReadyVerse lessons or call 112 in a real emergency.",
                         response: "I'm offline right now. Live AI coaching requires an active internet connection. Please check your offline ReadyVerse lessons or call 112 in a real emergency.",
+                        provider: 'offline',
                         isOffline: true
                     }),
                     {

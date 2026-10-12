@@ -19,7 +19,9 @@ exports.handler = async function (event, context) {
         };
     }
 
-    const result = await coachHandler.handleCoachRequest({ health: true }, 'health-check');
+    const query = (event && event.queryStringParameters) || {};
+    const isDeep = Boolean(query.deep === '1' || query.deep === 'true');
+    const result = await coachHandler.handleCoachRequest({ health: true, deep: isDeep }, 'health-check');
 
     return {
         statusCode: 200,

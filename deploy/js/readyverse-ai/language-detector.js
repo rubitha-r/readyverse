@@ -72,6 +72,11 @@
          * @returns {object} { language: 'english'|'tamil'|'tanglish', confidence: number, reason: string }
          */
         detect(text, options = {}) {
+            if (typeof options === 'string') {
+                options = { currentSessionLang: options };
+            } else if (!options || typeof options !== 'object') {
+                options = {};
+            }
             if (!text || typeof text !== 'string') {
                 return {
                     language: options.currentSessionLang || this.sessionLanguage || 'english',
